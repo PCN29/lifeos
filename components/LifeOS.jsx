@@ -593,39 +593,77 @@ function Today({ day, setDay, streak, upcoming, state, onApply }) {
 function VCE({ state, setState }) {
   const vce = state.vce;
   const [open, setOpen] = useState(vce.subjects[0]?.id);
+  const [editing, setEditing] = useState(null);
+  const [confirmDel, setConfirmDel] = useState(null);
 
-  const update = (subId, unit, sacId, field, value) => {
-    setState({
-      ...state,
-      vce: {
-        ...vce,
-        subjects: vce.subjects.map((s) => s.id !== subId ? s : {
-          ...s,
-          units: {
-            ...s.units,
-            [unit]: s.units[unit].map((x) => x.id !== sacId ? x : { ...x, [field]: value === "" ? null : Number(value) }),
-          },
-        }),
-      },
-    });
-  };
-  const removeSac = (subId, unit, sacId) => {
-    setState({
-      ...state,
-      vce: {
-        ...vce,
-        subjects: vce.subjects.map((s) => s.id !== subId ? s : {
-          ...s, units: { ...s.units, [unit]: s.units[unit].filter((x) => x.id !== sacId) },
-        }),
-      },
-    });
-  };
-
-  const setField = (id, field, v) => setState({
-    ...state, vce: { ...vce, subjects: vce.subjects.map((s) => s.id === id ? { ...s, [field]: v === "" ? null : Number(v) } : s) },
+  const patchSubject = (subId, fn) => setState({
+    ...state,
+    vce: { ...vce, subjects: vce.subjects.map((s) => (s.id === subId ? fn({ ...s }) : s)) },
   });
 
-  /* Every subject's scaled score, derived from rank when available, else the manual raw. */
+  const update = (subId, unit, sacId, field, value) =>
+    patchSubject(subId, (s) => ({
+      ...s,
+      units: {
+        ...s.units,
+        [unit]: s.units[unit].map((x) =>
+          x.id !== sacId ? x : { ...x, [field]: value === "" ? null : (field === "name" || field === "date" ? value : Number(value)) }),
+      },
+    }));
+
+  const addSac = (subId, unit) =>
+    patchSubject(subId, (s) => ({
+      ...s,
+      units: {
+        ...s.units,
+        [unit]: [...(s.units[unit] || []), { id: "sac_" + Date.now(), name: "New SAC", mark: null, total: null, date: null, weight: null }],
+      },
+    }));
+
+  const removeSac = (subId, unit, sacId) => {
+    patchSubject(subId, (s) => ({ ...s, units: { ...s.units, [unit]: s.units[unit].filter((x) => x.id !== sacId) } }));
+    setConfirmDel(null);
+  };
+
+  const moveSac = (subId, unit, idx, dir) =>
+    patchSubject(subId, (s) => {
+      const arr = [...s.units[unit]], j = idx + dir;
+      if (j < 0 || j >= arr.length) return s;
+      [arr[idx], arr[j]] = [arr[j], arr[idx]];
+      return { ...s, units: { ...s.units, [unit]: arr } };
+    });
+
+  const addExam = (subId) =>
+    patchSubject(subId, (s) => ({ ...s, exams: [...(s.exams || []), { name: "New exam", date: key(new Date()), time: "", location: null }] }));
+
+  const updateExam = (subId, i, field, value) =>
+    patchSubject(subId, (s) => ({ ...s, exams: s.exams.map((x, k) => (k === i ? { ...x, [field]: value } : x)) }));
+
+  const removeExam = (subId, i) =>
+    patchSubject(subId, (s) => ({ ...s, exams: s.exams.filter((_, k) => k !== i) }));
+
+  const setField = (id, field, v) => patchSubject(id, (s) => ({ ...s, [field]: v === "" ? null : (field === "name" ? v : Number(v)) }));
+
+  const addSubject = () => {
+    const id = "sub_" + Date.now();
+    setState({
+      ...state,
+      vce: {
+        ...vce,
+        subjects: [...vce.subjects, {
+          id, name: "New subject", completed: false, raw: null, rank: null, cohort: null,
+          weights: { u3: 25, u4: 25, exam: 50 }, exams: [], units: { 3: [], 4: [] },
+        }],
+      },
+    });
+    setOpen(id); setEditing(id);
+  };
+
+  const removeSubject = (subId) => {
+    setState({ ...state, vce: { ...vce, subjects: vce.subjects.filter((s) => s.id !== subId) } });
+    setConfirmDel(null);
+  };
+
   const projected = vce.subjects.map((s) => {
     const est = ssFromRank(s.rank, s.cohort);
     const raw = est ?? s.raw ?? 0;
@@ -633,6 +671,8 @@ function VCE({ state, setState }) {
   });
   const agg = aggregate(projected.map((s) => ({ ...s, scaled: s.sc })));
   const est = agg ? atarFor(agg.total) : 0;
+
+  const smallInput = { ...inputStyle, padding: "5px 7px", fontSize: 12.5 };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -654,17 +694,15 @@ function VCE({ state, setState }) {
           <Eyebrow>How this is worked out</Eyebrow>
           <div style={{ fontSize: 12.5, color: C.dim, lineHeight: 1.65 }}>
             <p style={{ margin: "0 0 9px" }}>
-              <strong style={{ color: C.bone }}>Rank → study score.</strong> Enter your rank in a subject and its cohort size.
-              Your percentile goes through an inverse-normal to a z-score, then onto {SCHOOL.name}'s
-              distribution (median {SCHOOL.medianSS}, SD {SCHOOL.sd}) from the published 2025 results.
+              <strong style={{ color: C.bone }}>Rank → study score.</strong> Your percentile goes through an
+              inverse-normal onto {SCHOOL.name}'s distribution (median {SCHOOL.medianSS}, SD {SCHOOL.sd}).
             </p>
             <p style={{ margin: "0 0 9px" }}>
-              <strong style={{ color: C.bone }}>Study score → scaled.</strong> Applied as a curve across seven anchor
-              points, not a flat offset — so the gap changes at different scores.
+              <strong style={{ color: C.bone }}>Study score → scaled.</strong> Applied as a curve across seven
+              anchor points, not a flat offset.
             </p>
             <p style={{ margin: 0 }}>
-              <strong style={{ color: C.bone }}>Scaled → ATAR.</strong> English plus your next three, plus 10% of the
-              fifth and sixth. That aggregate maps to a percentile rank.
+              <strong style={{ color: C.bone }}>Scaled → ATAR.</strong> English + next three + 10% of the fifth and sixth.
             </p>
           </div>
         </Card>
@@ -678,14 +716,14 @@ function VCE({ state, setState }) {
               {s.name}{s.isEnglish && <span style={{ fontFamily: MONO, fontSize: 9, color: C.steel, marginLeft: 5 }}>ENG</span>}
             </span>
             <input value={s.rank ?? ""} onChange={(e) => setField(s.id, "rank", e.target.value)} placeholder="rank" inputMode="numeric"
-              style={{ ...inputStyle, flex: "0 0 54px", padding: "6px 6px", fontSize: 12.5, textAlign: "center" }} />
+              style={{ ...smallInput, flex: "0 0 54px", textAlign: "center" }} />
             <span style={{ color: C.dim, fontSize: 12 }}>/</span>
             <input value={s.cohort ?? ""} onChange={(e) => setField(s.id, "cohort", e.target.value)} placeholder="of" inputMode="numeric"
-              style={{ ...inputStyle, flex: "0 0 54px", padding: "6px 6px", fontSize: 12.5, textAlign: "center" }} />
+              style={{ ...smallInput, flex: "0 0 54px", textAlign: "center" }} />
             <span style={{ color: C.dim, fontSize: 12 }}>→</span>
             <input value={s.estFromRank ?? s.raw ?? ""} onChange={(e) => setField(s.id, "raw", e.target.value)}
               disabled={s.estFromRank !== null} inputMode="numeric"
-              style={{ ...inputStyle, flex: "0 0 54px", padding: "6px 6px", fontSize: 12.5, textAlign: "center", opacity: s.estFromRank !== null ? .6 : 1 }} />
+              style={{ ...smallInput, flex: "0 0 54px", textAlign: "center", opacity: s.estFromRank !== null ? .6 : 1 }} />
             <span style={{ color: C.dim, fontSize: 12 }}>→</span>
             <span style={{ fontFamily: MONO, fontSize: 15, color: C.moss, flex: "0 0 46px", textAlign: "right" }}>{s.sc}</span>
           </div>
@@ -695,129 +733,191 @@ function VCE({ state, setState }) {
         </div>
       </Card>
 
+      <div className="los-cols">
+        {vce.subjects.map((sub) => {
+          const avg = subjectAvg(sub);
+          const u3 = unitAvg(sub.units[3]), u4 = unitAvg(sub.units[4]);
+          const isOpen = open === sub.id;
+          const isEditing = editing === sub.id;
+          return (
+            <Card key={sub.id} style={{ padding: 0, overflow: "hidden", alignSelf: "start" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "12px 14px" }}>
+                <button onClick={() => setOpen(isOpen ? null : sub.id)} style={{
+                  flex: 1, background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0, minWidth: 0,
+                }}>
+                  <div style={{ fontSize: 15, color: C.bone, fontWeight: 600 }}>
+                    {sub.name}{sub.completed && <span style={{ fontFamily: MONO, fontSize: 10, color: C.moss, marginLeft: 8 }}>DONE · SS {sub.raw}</span>}
+                  </div>
+                  {!sub.completed && (
+                    <div style={{ fontFamily: MONO, fontSize: 11, color: C.dim, marginTop: 3 }}>
+                      U3 {u3 ? Math.round(u3.pct * 100) + "%" : "—"} · U4 {u4 ? Math.round(u4.pct * 100) + "%" : "—"}
+                      {avg && avg.pending > 0 && <span style={{ color: C.amber }}> · {avg.pending} pending</span>}
+                    </div>
+                  )}
+                </button>
+                <button onClick={() => { setEditing(isEditing ? null : sub.id); setOpen(sub.id); setConfirmDel(null); }}
+                  style={{
+                    background: isEditing ? C.signal : "none", color: isEditing ? C.ink : C.dim,
+                    border: `1px solid ${isEditing ? C.signal : C.rule}`, borderRadius: 6,
+                    padding: "4px 9px", fontSize: 11.5, cursor: "pointer", fontFamily: SANS, flexShrink: 0,
+                  }}>{isEditing ? "Done" : "Edit"}</button>
+                <span style={{ fontFamily: MONO, fontSize: 22, flexShrink: 0, minWidth: 34, textAlign: "right", color: avg ? (avg.pct >= .8 ? C.moss : avg.pct >= .6 ? C.amber : C.signal) : C.dim }}>
+                  {avg ? Math.round(avg.pct * 100) : "—"}
+                </span>
+              </div>
+
+              {isOpen && (
+                <div style={{ padding: "0 14px 14px" }}>
+                  {isEditing && (
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+                      <input value={sub.name} onChange={(e) => setField(sub.id, "name", e.target.value)}
+                        style={{ ...smallInput, fontFamily: SANS, flex: "1 1 140px" }} />
+                      {confirmDel === "sub:" + sub.id ? (
+                        <>
+                          <Btn onClick={() => removeSubject(sub.id)} style={{ borderColor: C.signal, color: C.signal, padding: "5px 9px", fontSize: 12 }}>Delete subject</Btn>
+                          <Btn onClick={() => setConfirmDel(null)} style={{ padding: "5px 9px", fontSize: 12 }}>Cancel</Btn>
+                        </>
+                      ) : (
+                        <Btn onClick={() => setConfirmDel("sub:" + sub.id)} style={{ padding: "5px 9px", fontSize: 12 }}>Remove subject</Btn>
+                      )}
+                    </div>
+                  )}
+
+                  {[3, 4].map((u) => (
+                    <div key={u} style={{ marginBottom: 12 }}>
+                      <div style={{ fontFamily: MONO, fontSize: 10, color: C.dim, letterSpacing: 1.2, marginBottom: 7 }}>UNIT {u}</div>
+                      {(sub.units[u] || []).map((s, idx) => {
+                        const d = s.date ? Math.ceil((parseKey(s.date) - new Date()) / 86400000) : null;
+                        const future = d !== null && d >= 0;
+                        const delKey = `sac:${sub.id}:${u}:${s.id}`;
+                        return (
+                          <div key={s.id} style={{ marginBottom: isEditing ? 10 : 6 }}>
+                            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                              {isEditing ? (
+                                <input value={s.name} onChange={(e) => update(sub.id, u, s.id, "name", e.target.value)}
+                                  style={{ ...smallInput, fontFamily: SANS, flex: "1 1 120px" }} />
+                              ) : (
+                                <span style={{ flex: "1 1 130px", fontSize: 13, color: s.mark === null ? C.dim : C.bone, minWidth: 0 }}>
+                                  {s.name}
+                                  {s.weight ? <span style={{ fontFamily: MONO, fontSize: 10, color: C.violet, marginLeft: 6 }}>{s.weight}%</span> : null}
+                                  {future && <span style={{ fontFamily: MONO, fontSize: 10, color: d <= 7 ? C.signal : C.amber, marginLeft: 6 }}>in {d}d</span>}
+                                </span>
+                              )}
+                              <input value={s.mark ?? ""} onChange={(e) => update(sub.id, u, s.id, "mark", e.target.value)}
+                                placeholder="—" inputMode="decimal" style={{ ...smallInput, flex: "0 0 54px", textAlign: "center" }} />
+                              <span style={{ color: C.dim, fontFamily: MONO, fontSize: 13 }}>/</span>
+                              <input value={s.total ?? ""} onChange={(e) => update(sub.id, u, s.id, "total", e.target.value)}
+                                placeholder="—" inputMode="decimal" style={{ ...smallInput, flex: "0 0 54px", textAlign: "center" }} />
+                              <span style={{ fontFamily: MONO, fontSize: 12, color: s.mark > s.total ? C.signal : C.dim, flex: "0 0 40px", textAlign: "right" }}>
+                                {s.mark !== null && s.total ? Math.round((s.mark / s.total) * 100) + "%" : ""}
+                              </span>
+                            </div>
+
+                            {isEditing && (
+                              <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 5, flexWrap: "wrap" }}>
+                                <input type="date" value={s.date || ""} onChange={(e) => update(sub.id, u, s.id, "date", e.target.value)}
+                                  style={{ ...smallInput, flex: "0 0 140px" }} />
+                                <input value={s.weight ?? ""} onChange={(e) => update(sub.id, u, s.id, "weight", e.target.value)}
+                                  placeholder="% of SS" inputMode="decimal" style={{ ...smallInput, flex: "0 0 80px", textAlign: "center" }} />
+                                <Btn onClick={() => moveSac(sub.id, u, idx, -1)} style={{ padding: "4px 8px", fontSize: 12 }}>↑</Btn>
+                                <Btn onClick={() => moveSac(sub.id, u, idx, 1)} style={{ padding: "4px 8px", fontSize: 12 }}>↓</Btn>
+                                {confirmDel === delKey ? (
+                                  <>
+                                    <Btn onClick={() => removeSac(sub.id, u, s.id)} style={{ borderColor: C.signal, color: C.signal, padding: "4px 9px", fontSize: 12 }}>Confirm</Btn>
+                                    <Btn onClick={() => setConfirmDel(null)} style={{ padding: "4px 9px", fontSize: 12 }}>Cancel</Btn>
+                                  </>
+                                ) : (
+                                  <Btn onClick={() => setConfirmDel(delKey)} style={{ padding: "4px 8px", fontSize: 12 }}><X size={12} /></Btn>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {isEditing && (
+                        <Btn onClick={() => addSac(sub.id, u)} style={{ padding: "5px 10px", fontSize: 12, marginTop: 4 }}>
+                          <Plus size={11} /> Add SAC to Unit {u}
+                        </Btn>
+                      )}
+                    </div>
+                  ))}
+
+                  {((sub.exams || []).length > 0 || isEditing) && (
+                    <div style={{ borderTop: `1px solid ${C.rule}`, paddingTop: 10, marginBottom: 10 }}>
+                      <div style={{ fontFamily: MONO, fontSize: 10, color: C.dim, letterSpacing: 1.2, marginBottom: 7 }}>EXAMS</div>
+                      {(sub.exams || []).map((x, i) => {
+                        const d = Math.ceil((parseKey(x.date) - new Date()) / 86400000);
+                        return isEditing ? (
+                          <div key={i} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
+                            <input value={x.name} onChange={(e) => updateExam(sub.id, i, "name", e.target.value)}
+                              style={{ ...smallInput, fontFamily: SANS, flex: "1 1 90px" }} />
+                            <input type="date" value={x.date || ""} onChange={(e) => updateExam(sub.id, i, "date", e.target.value)}
+                              style={{ ...smallInput, flex: "0 0 140px" }} />
+                            <input value={x.time || ""} onChange={(e) => updateExam(sub.id, i, "time", e.target.value)}
+                              placeholder="time" style={{ ...smallInput, flex: "0 0 80px" }} />
+                            <Btn onClick={() => removeExam(sub.id, i)} style={{ padding: "4px 8px", fontSize: 12 }}><X size={12} /></Btn>
+                          </div>
+                        ) : (
+                          <div key={i} style={{ marginBottom: 6 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, gap: 8 }}>
+                              <span style={{ color: C.bone }}>{x.name}</span>
+                              <span style={{ fontFamily: MONO, fontSize: 12, color: C.dim, textAlign: "right" }}>
+                                {parseKey(x.date).toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" })}
+                                {x.time ? ` · ${x.time}` : ""}<span style={{ color: C.steel }}> · {d}d</span>
+                              </span>
+                            </div>
+                            {x.location && <div style={{ fontSize: 11.5, color: C.amber, marginTop: 2, lineHeight: 1.4 }}>{x.location}</div>}
+                          </div>
+                        );
+                      })}
+                      {isEditing && (
+                        <Btn onClick={() => addExam(sub.id)} style={{ padding: "5px 10px", fontSize: 12, marginTop: 4 }}>
+                          <Plus size={11} /> Add exam
+                        </Btn>
+                      )}
+                    </div>
+                  )}
+
+                  {(() => {
+                    const st = standing(sub);
+                    if (!st) return null;
+                    return (
+                      <div style={{ borderTop: `1px solid ${C.rule}`, paddingTop: 10 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontFamily: MONO, fontSize: 10, color: C.dim, letterSpacing: 1.2, marginBottom: 6 }}>
+                          <span>LOCKED IN {st.assessed}%</span><span>STILL AHEAD {st.remaining}%</span>
+                        </div>
+                        <div style={{ height: 6, background: C.rule, borderRadius: 3, display: "flex", overflow: "hidden" }}>
+                          <div style={{ width: `${st.assessed}%`, background: st.pct >= .75 ? C.moss : st.pct >= .6 ? C.amber : C.signal }} />
+                          <div style={{ width: `${st.remaining}%`, background: C.plate2 }} />
+                        </div>
+                        <div style={{ fontSize: 12, color: C.dim, marginTop: 7, lineHeight: 1.5 }}>
+                          {st.pct !== null && <>Sitting at <span style={{ color: C.bone, fontFamily: MONO }}>{Math.round(st.pct * 100)}%</span> on what's been assessed. </>}
+                          The exam alone is <span style={{ color: C.bone, fontFamily: MONO }}>{st.examWeight}%</span> of this subject.
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+            </Card>
+          );
+        })}
+      </div>
+
+      <Btn onClick={addSubject} style={{ alignSelf: "start" }}><Plus size={13} /> Add subject</Btn>
+
       <Card style={{ borderColor: C.amber, padding: 14 }}>
         <Eyebrow>Where this gets shaky</Eyebrow>
         <div style={{ fontSize: 12.5, color: C.dim, lineHeight: 1.65 }}>
           The aggregate arithmetic is exact. Everything feeding it is an estimate.
           Your rank only sets your <em>moderated SAC</em> component — the exam is scored against the whole state and is
-          50–66% of every subject you do. Scaling is last year's curve. And the ATAR conversion is interpolated, so ±2.
-          Indonesian runs through VSL, not {SCHOOL.name}, so its cohort is a different pool entirely.
+          50–66% of every subject. Scaling is last year's curve, and the ATAR conversion is interpolated, so ±2.
+          Indonesian runs through VSL, not {SCHOOL.name}, so it's a different cohort entirely.
         </div>
       </Card>
-
-      <div className="los-cols">
-      {vce.subjects.map((sub) => {
-        const avg = subjectAvg(sub);
-        const u3 = unitAvg(sub.units[3]), u4 = unitAvg(sub.units[4]);
-        const isOpen = open === sub.id;
-        return (
-          <Card key={sub.id} style={{ padding: 0, overflow: "hidden" }}>
-            <button onClick={() => setOpen(isOpen ? null : sub.id)} style={{
-              width: "100%", background: "none", border: "none", padding: 14, cursor: "pointer",
-              display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, textAlign: "left",
-            }}>
-              <div>
-                <div style={{ fontSize: 15, color: C.bone, fontWeight: 600 }}>
-                  {sub.name}{sub.completed && <span style={{ fontFamily: MONO, fontSize: 10, color: C.moss, marginLeft: 8 }}>COMPLETED · SS {sub.raw}</span>}
-                </div>
-                {!sub.completed && (
-                  <div style={{ fontFamily: MONO, fontSize: 11, color: C.dim, marginTop: 3 }}>
-                    U3 {u3 ? Math.round(u3.pct * 100) + "%" : "—"} · U4 {u4 ? Math.round(u4.pct * 100) + "%" : "—"}
-                    {avg && avg.pending > 0 && <span style={{ color: C.amber }}> · {avg.pending} pending</span>}
-                  </div>
-                )}
-              </div>
-              <div style={{ fontFamily: MONO, fontSize: 24, color: avg ? (avg.pct >= .8 ? C.moss : avg.pct >= .6 ? C.amber : C.signal) : C.dim }}>
-                {avg ? Math.round(avg.pct * 100) : "—"}
-              </div>
-            </button>
-
-            {isOpen && !sub.completed && (
-              <div style={{ padding: "0 14px 14px" }}>
-                {[3, 4].map((u) => (
-                  <div key={u} style={{ marginBottom: 12 }}>
-                    <div style={{ fontFamily: MONO, fontSize: 10, color: C.dim, letterSpacing: 1.2, marginBottom: 7 }}>UNIT {u}</div>
-                    {(sub.units[u] || []).map((s) => {
-                      const d = s.date ? Math.ceil((parseKey(s.date) - new Date()) / 86400000) : null;
-                      const future = d !== null && d >= 0;
-                      return (
-                        <div key={s.id} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
-                          <span style={{ flex: "1 1 130px", fontSize: 13, color: s.mark === null ? C.dim : C.bone }}>
-                            {s.name}
-                            {s.weight ? <span style={{ fontFamily: MONO, fontSize: 10, color: C.violet, marginLeft: 6 }}>{s.weight}%</span> : null}
-                            {future && <span style={{ fontFamily: MONO, fontSize: 10, color: d <= 7 ? C.signal : C.amber, marginLeft: 6 }}>in {d}d</span>}
-                          </span>
-                          <input value={s.mark ?? ""} onChange={(e) => update(sub.id, u, s.id, "mark", e.target.value)}
-                            placeholder="—" inputMode="decimal" style={{ ...inputStyle, flex: "0 0 58px", padding: "6px 8px", fontSize: 13, textAlign: "center" }} />
-                          <span style={{ color: C.dim, fontFamily: MONO, fontSize: 13 }}>/</span>
-                          <input value={s.total ?? ""} onChange={(e) => update(sub.id, u, s.id, "total", e.target.value)}
-                            placeholder="—" inputMode="decimal" style={{ ...inputStyle, flex: "0 0 58px", padding: "6px 8px", fontSize: 13, textAlign: "center" }} />
-                          <span style={{ fontFamily: MONO, fontSize: 12, color: s.mark > s.total ? C.signal : C.dim, flex: "0 0 44px", textAlign: "right" }}>
-                            {s.mark !== null && s.total ? Math.round((s.mark / s.total) * 100) + "%" : ""}
-                          </span>
-                          <button onClick={() => removeSac(sub.id, u, s.id)} title="Remove"
-                            style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", padding: 2, flex: "0 0 auto", lineHeight: 0 }}>
-                            <X size={13} />
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
-                {(sub.exams || []).length > 0 && (
-                  <div style={{ borderTop: `1px solid ${C.rule}`, paddingTop: 10, marginBottom: 10 }}>
-                    <div style={{ fontFamily: MONO, fontSize: 10, color: C.dim, letterSpacing: 1.2, marginBottom: 7 }}>EXAMS</div>
-                    {sub.exams.map((x) => {
-                      const d = Math.ceil((parseKey(x.date) - new Date()) / 86400000);
-                      return (
-                        <div key={x.name} style={{ marginBottom: 6 }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, gap: 8 }}>
-                            <span style={{ color: C.bone }}>{x.name}</span>
-                            <span style={{ fontFamily: MONO, fontSize: 12, color: C.dim, textAlign: "right" }}>
-                              {parseKey(x.date).toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" })} · {x.time}
-                              <span style={{ color: C.steel }}> · {d}d</span>
-                            </span>
-                          </div>
-                          {x.location && (
-                            <div style={{ fontSize: 11.5, color: C.amber, marginTop: 2, lineHeight: 1.4 }}>{x.location}</div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-                {(() => {
-                  const st = standing(sub);
-                  if (!st) return null;
-                  return (
-                    <div style={{ borderTop: `1px solid ${C.rule}`, paddingTop: 10, marginBottom: 10 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", fontFamily: MONO, fontSize: 10, color: C.dim, letterSpacing: 1.2, marginBottom: 6 }}>
-                        <span>LOCKED IN {st.assessed}%</span><span>STILL AHEAD {st.remaining}%</span>
-                      </div>
-                      <div style={{ height: 6, background: C.rule, borderRadius: 3, display: "flex", overflow: "hidden" }}>
-                        <div style={{ width: `${st.assessed}%`, background: st.pct >= .75 ? C.moss : st.pct >= .6 ? C.amber : C.signal }} />
-                        <div style={{ width: `${st.remaining}%`, background: C.plate2 }} />
-                      </div>
-                      <div style={{ fontSize: 12, color: C.dim, marginTop: 7, lineHeight: 1.5 }}>
-                        {st.pct !== null && <>Sitting at <span style={{ color: C.bone, fontFamily: MONO }}>{Math.round(st.pct * 100)}%</span> on what's been assessed. </>}
-                        The exam alone is <span style={{ color: C.bone, fontFamily: MONO }}>{st.examWeight}%</span> of this subject.
-                      </div>
-                    </div>
-                  );
-                })()}
-                <div style={{ fontSize: 11.5, color: C.dim, lineHeight: 1.5, borderTop: `1px solid ${C.rule}`, paddingTop: 9 }}>
-                  Blank SACs are excluded from the average — they don't count as zero.
-                </div>
-              </div>
-            )}
-          </Card>
-        );
-      })}
-      </div>
     </div>
   );
 }
-
 /* ============================== DASHBOARD ============================== */
 function Dashboard({ state, meta, viewDate }) {
   const [hover, setHover] = useState(null);
