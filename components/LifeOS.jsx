@@ -1,7 +1,6 @@
 "use client";
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { loadRemote, saveRemote } from "../lib/store";
-import { supabase } from "../lib/supabaseClient";
 import {
   Flame, Dumbbell, BookOpen, Play, Square, Plus, Minus, Trophy, ChevronLeft,
   ChevronRight, Check, X, Timer, BarChart3, FileText, Activity, AlertTriangle, Download
@@ -1484,7 +1483,6 @@ export default function LifeOS({ user }) {
             <Btn onClick={() => setOffset(offset - 1)}><ChevronLeft size={15} /></Btn>
             <Btn onClick={() => setOffset(0)} active={offset === 0}>Today</Btn>
             <Btn onClick={() => setOffset(Math.min(0, offset + 1))} style={{ opacity: offset >= 0 ? .35 : 1 }}><ChevronRight size={15} /></Btn>
-            <Btn onClick={() => supabase.auth.signOut()} title="Sign out" style={{ marginLeft: 6 }}>Out</Btn>
           </div>
         </div>
 
