@@ -2,6 +2,7 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import * as THREE from "three";
 import { WORLDS, DEPTHS, SEED_PROGRESS, reachable, coverage } from "../lib/atlas";
+import { landAt, MASK_W, MASK_H } from "../lib/landmask";
 
 const C = {
   ink: "#10131A", plate: "#191E28", plate2: "#141922", rule: "#2A3140",
@@ -26,33 +27,46 @@ function sph(latDeg, lonDeg) {
 }
 const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
-/* ---------- lay the territories out on the sphere ---------- */
+/* Each world is a different planet, but all built on real Earth landforms
+   so the geography stays readable. Mars mirrors it, the ice moon flips it. */
+export const PLANETS = {
+  maths:    { label: "Earth",      flipX: false, flipY: false, sea: [8, 16, 32],  seaDeep: [5, 10, 22], rim: "#3D6FD4" },
+  physics:  { label: "Mars",       flipX: true,  flipY: false, sea: [26, 12, 8],  seaDeep: [16, 7, 5],  rim: "#D4633D" },
+  strength: { label: "Ice moon",   flipX: false, flipY: true,  sea: [14, 22, 30], seaDeep: [8, 14, 20], rim: "#4FB4D4" },
+};
+
+/* real landmasses to anchor each continent onto */
+const ANCHORS = [
+  { lat: 52, lon: 95 },    // northern Asia
+  { lat: 4, lon: 21 },     // central Africa
+  { lat: 46, lon: -100 },  // North America
+  { lat: -13, lon: -58 },  // South America
+  { lat: 50, lon: 14 },    // Europe
+  { lat: -24, lon: 134 },  // Australia
+  { lat: 22, lon: 79 },    // India
+  { lat: 62, lon: -42 },   // Greenland
+];
+
 function placeWorld(world, seedNum) {
   const rand = rng(seedNum);
   const contIds = Object.keys(world.continents);
-
   const contCenter = {};
-  contIds.forEach((c, i) => {
-    const frac = contIds.length > 1 ? i / (contIds.length - 1) : 0.5;
-    const lat = (0.72 - frac * 1.44) * 62 + (rand() - 0.5) * 14;
-    const lon = ((i * 137.5) + seedNum * 29) % 360 - 180;
-    contCenter[c] = { lat, lon };
-  });
+  contIds.forEach((c, i) => { contCenter[c] = ANCHORS[i % ANCHORS.length]; });
 
   const seeds = world.territories.map((t) => {
-    const cc = contCenter[t.continent] || { lat: 0, lon: 0 };
-    const inland = 0.3 + (t.tier / 5) * 0.8;
+    const cc = contCenter[t.continent];
+    const inland = 0.35 + (t.tier / 5) * 0.85;
     const ang = rand() * Math.PI * 2;
-    const rad = 25 * inland * (0.4 + rand() * 0.8);
-    const lat = Math.max(-76, Math.min(76, cc.lat + Math.sin(ang) * rad * 0.8));
-    const lon = cc.lon + (Math.cos(ang) * rad) / Math.max(0.35, Math.cos(toRad(lat)));
+    const rad = 30 * inland * (0.35 + rand() * 0.85);
+    const lat = Math.max(-72, Math.min(78, cc.lat + Math.sin(ang) * rad * 0.72));
+    const lon = cc.lon + (Math.cos(ang) * rad) / Math.max(0.4, Math.cos(toRad(lat)));
     return { ...t, lat, lon, v: sph(lat, lon) };
   });
   return { seeds, contCenter };
 }
 
-/* ---------- paint the equirectangular map ---------- */
-function paintTexture(seeds, world, prog, reachIds, selId) {
+/* ---------- paint the map onto real coastlines ---------- */
+function paintTexture(seeds, world, prog, reachIds, selId, planet) {
   const cv = document.createElement("canvas");
   cv.width = TEX_W; cv.height = TEX_H;
   const ctx = cv.getContext("2d");
@@ -62,13 +76,13 @@ function paintTexture(seeds, world, prog, reachIds, selId) {
   const rgb = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
   const colorFor = (t) => {
     const depth = prog[t.id] || 0;
-    if (depth >= 4) return [127, 232, 168];
+    if (depth >= 4) return [138, 240, 176];
     if (depth === 3) return [79, 180, 119];
-    if (depth === 2) return [56, 130, 88];
-    if (depth === 1) return [40, 88, 62];
-    if (reachIds.has(t.id)) return [104, 56, 36];
+    if (depth === 2) return [54, 126, 86];
+    if (depth === 1) return [38, 84, 60];
+    if (reachIds.has(t.id)) return [122, 66, 40];
     const [r, g, b] = rgb(world.continents[t.continent]?.hue || "#2A3140");
-    return [Math.round(r * 0.19 + 15), Math.round(g * 0.19 + 17), Math.round(b * 0.19 + 23)];
+    return [Math.round(r * 0.26 + 22), Math.round(g * 0.26 + 24), Math.round(b * 0.26 + 30)];
   };
   const colors = seeds.map(colorFor);
   const invW = seeds.map((t) => 1 / Math.sqrt(t.w));
@@ -76,10 +90,27 @@ function paintTexture(seeds, world, prog, reachIds, selId) {
   const sx = new Float64Array(n), sy = new Float64Array(n), sz = new Float64Array(n);
   seeds.forEach((t, i) => { sx[i] = t.v[0]; sy[i] = t.v[1]; sz[i] = t.v[2]; });
 
+  const isLand = (tx, ty) => {
+    let mx = Math.floor((tx / TEX_W) * MASK_W), my = Math.floor((ty / TEX_H) * MASK_H);
+    if (planet.flipX) mx = MASK_W - 1 - mx;
+    if (planet.flipY) my = MASK_H - 1 - my;
+    return landAt(mx, my);
+  };
+
+  const owner = new Int16Array(TEX_W * TEX_H).fill(-1);
+
   for (let y = 0; y < TEX_H; y++) {
     const lat = 90 - ((y + 0.5) / TEX_H) * 180;
     const cl = Math.cos(toRad(lat)), py = Math.sin(toRad(lat));
     for (let x = 0; x < TEX_W; x++) {
+      const o = (y * TEX_W + x) * 4;
+      if (!isLand(x, y)) {
+        // ocean, deepening away from the coast
+        const near = isLand(x + 3, y) || isLand(x - 3, y) || isLand(x, y + 3) || isLand(x, y - 3);
+        const c = near ? planet.sea : planet.seaDeep;
+        d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2]; d[o + 3] = 255;
+        continue;
+      }
       const lo = toRad(((x + 0.5) / TEX_W) * 360 - 180);
       const px = cl * Math.cos(lo), pz = cl * Math.sin(lo);
       let best = 0, bd = Infinity, second = Infinity;
@@ -90,20 +121,26 @@ function paintTexture(seeds, world, prog, reachIds, selId) {
         if (eff < bd) { second = bd; bd = eff; best = i; }
         else if (eff < second) second = eff;
       }
-      const o = (y * TEX_W + x) * 4;
-      let col;
-      if (bd >= CUT) {
-        const t = Math.min(1, (bd - CUT) / 0.15);
-        col = [10 - 3 * t, 14 - 4 * t, 22 - 6 * t];
-      } else {
-        col = colors[best].slice();
-        if (second - bd < 0.007) col = [col[0] * 0.42 + 32, col[1] * 0.42 + 36, col[2] * 0.42 + 44];
-        if (CUT - bd < 0.013) col = [col[0] * 0.66 + 26, col[1] * 0.66 + 30, col[2] * 0.66 + 40];
-        if (seeds[best].id === selId) col = [col[0] * 0.5 + 118, col[1] * 0.5 + 114, col[2] * 0.5 + 104];
-      }
+      owner[y * TEX_W + x] = best;
+      let col = colors[best].slice();
+      if (second - bd < 0.010) col = [col[0] * 0.45 + 34, col[1] * 0.45 + 38, col[2] * 0.45 + 46];
+      if (seeds[best].id === selId) col = [col[0] * 0.5 + 122, col[1] * 0.5 + 118, col[2] * 0.5 + 108];
       d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2]; d[o + 3] = 255;
     }
   }
+
+  // bright coastline so continents read clearly
+  for (let y = 1; y < TEX_H - 1; y++) {
+    for (let x = 0; x < TEX_W; x++) {
+      if (owner[y * TEX_W + x] < 0) continue;
+      const edge = owner[y * TEX_W + ((x + 1) % TEX_W)] < 0 || owner[y * TEX_W + ((x - 1 + TEX_W) % TEX_W)] < 0
+        || owner[(y + 1) * TEX_W + x] < 0 || owner[(y - 1) * TEX_W + x] < 0;
+      if (!edge) continue;
+      const o = (y * TEX_W + x) * 4;
+      d[o] = d[o] * 0.6 + 78; d[o + 1] = d[o + 1] * 0.6 + 84; d[o + 2] = d[o + 2] * 0.6 + 92;
+    }
+  }
+
   ctx.putImageData(img, 0, 0);
   return cv;
 }
@@ -116,7 +153,7 @@ function pick(seeds, lat, lon) {
     const eff = Math.acos(c) / Math.sqrt(t.w);
     if (eff < bd) { bd = eff; best = t; }
   }
-  return bd < CUT ? best : null;
+  return best;
 }
 
 export default function Atlas({ progress, setProgress }) {
@@ -131,6 +168,7 @@ export default function Atlas({ progress, setProgress }) {
 
   const world = WORLDS[worldId];
   const seedNum = worldId === "maths" ? 7 : worldId === "physics" ? 23 : 41;
+  const planet = PLANETS[worldId] || PLANETS.maths;
   const { seeds } = useMemo(() => placeWorld(world, seedNum), [worldId]);
 
   const prog = progress || {};
@@ -159,12 +197,12 @@ export default function Atlas({ progress, setProgress }) {
     scene.add(globe);
 
     const atmo = new THREE.Mesh(
-      new THREE.SphereGeometry(1.17, 64, 48),
+      new THREE.SphereGeometry(1.12, 64, 48),
       new THREE.ShaderMaterial({
         transparent: true, side: THREE.BackSide, blending: THREE.AdditiveBlending, depthWrite: false,
         uniforms: { uColor: { value: new THREE.Color("#3D6FD4") } },
         vertexShader: "varying vec3 vN; void main(){ vN = normalize(normalMatrix * normal); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }",
-        fragmentShader: "varying vec3 vN; uniform vec3 uColor; void main(){ float i = pow(0.70 - dot(vN, vec3(0.0,0.0,1.0)), 2.6); gl_FragColor = vec4(uColor,1.0) * clamp(i,0.0,1.0); }",
+        fragmentShader: "varying vec3 vN; uniform vec3 uColor; void main(){ float i = pow(0.62 - dot(vN, vec3(0.0,0.0,1.0)), 3.4) * 0.85; gl_FragColor = vec4(uColor,1.0) * clamp(i,0.0,1.0); }",
       })
     );
     scene.add(atmo);
@@ -180,7 +218,7 @@ export default function Atlas({ progress, setProgress }) {
     sg.setAttribute("position", new THREE.BufferAttribute(pts, 3));
     scene.add(new THREE.Points(sg, new THREE.PointsMaterial({ color: 0x8898b4, size: 0.13, sizeAttenuation: true, transparent: true, opacity: 0.7 })));
 
-    three.current = { scene, cam, renderer, globe, rot: { x: 0, y: 0 }, spin: true };
+    three.current = { scene, cam, renderer, globe, atmo, rot: { x: 0, y: 0 }, spin: true };
     setReady(true);
 
     let raf;
@@ -210,15 +248,20 @@ export default function Atlas({ progress, setProgress }) {
 
   useEffect(() => {
     const t = three.current;
+    if (t && t.atmo) t.atmo.material.uniforms.uColor.value.set(planet.rim);
+  }, [planet]);
+
+  useEffect(() => {
+    const t = three.current;
     if (!ready || !t.globe) return;
-    const cv = paintTexture(seeds, world, prog, reachIds, sel);
+    const cv = paintTexture(seeds, world, prog, reachIds, sel, planet);
     const tex = new THREE.CanvasTexture(cv);
     if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = 4;
     if (t.globe.material.map) t.globe.material.map.dispose();
     t.globe.material.map = tex;
     t.globe.material.needsUpdate = true;
-  }, [ready, seeds, world, progress, reachIds, sel]);
+  }, [ready, seeds, world, progress, reachIds, sel, planet]);
 
   const onDown = (e) => {
     const p = e.touches ? e.touches[0] : e;
@@ -295,7 +338,7 @@ export default function Atlas({ progress, setProgress }) {
             style={{ width: "100%", aspectRatio: "1", cursor: "grab", touchAction: "none" }} />
 
           <div style={{ position: "absolute", left: 11, top: 11, fontFamily: MONO, fontSize: 10, color: C.dim, letterSpacing: 1, pointerEvents: "none" }}>
-            {world.name.toUpperCase()} · {cov.heldCount}/{cov.count} TERRITORIES
+            {planet.label.toUpperCase()} · {world.name.toUpperCase()} · {cov.heldCount}/{cov.count} TERRITORIES
           </div>
 
           <button onClick={() => setSpin(!spin)} style={{
