@@ -1,9 +1,11 @@
 "use client";
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { loadRemote, saveRemote } from "../lib/store";
+import Atlas from "./Atlas";
+import { SEED_PROGRESS } from "../lib/atlas";
 import {
   Flame, Dumbbell, BookOpen, Play, Square, Plus, Minus, Trophy, ChevronLeft,
-  ChevronRight, Check, X, Timer, BarChart3, FileText, Activity, AlertTriangle, Download
+  ChevronRight, Check, X, Timer, BarChart3, FileText, Activity, AlertTriangle, Download, Globe
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, Tooltip,
@@ -1345,6 +1347,7 @@ export default function LifeOS({ user }) {
         const remote = await loadRemote(user.id);
         const base = remote || SEED;
         if (!base.vce) base.vce = SEED_VCE;
+        if (!base.atlas) base.atlas = SEED_PROGRESS;
         setState(base);
         setStorageOk(true);
       } catch (e) {
@@ -1447,6 +1450,7 @@ export default function LifeOS({ user }) {
     { id: "vce", label: "VCE", icon: BookOpen },
     { id: "log", label: "Log", icon: FileText },
     { id: "gym", label: "Gym", icon: Dumbbell },
+    { id: "atlas", label: "Atlas", icon: Globe },
     { id: "backup", label: "Backup", icon: Download },
   ];
 
@@ -1504,6 +1508,7 @@ export default function LifeOS({ user }) {
         {tab === "vce" && <VCE state={state} setState={setState} />}
         {tab === "log" && <Log state={state} />}
         {tab === "gym" && <Gym state={state} setState={setState} todayKey={vk} />}
+        {tab === "atlas" && <Atlas progress={state.atlas || SEED_PROGRESS} setProgress={(p) => setState({ ...state, atlas: p })} />}
         {tab === "backup" && <Backup state={state} setState={setState} storageOk={storageOk} saveStatus={saveStatus} exportData={exportData} />}
       </div>
     </div>
