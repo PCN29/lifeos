@@ -2,7 +2,7 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import * as THREE from "three";
 import { WORLDS, DEPTHS, SEED_PROGRESS, reachable, coverage } from "../lib/atlas";
-import { landAt, MASK_W, MASK_H } from "../lib/landmask";
+import { coastRings } from "../lib/coastline";
 
 const C = {
   ink: "#10131A", plate: "#191E28", plate2: "#141922", rule: "#2A3140",
@@ -12,136 +12,213 @@ const C = {
 const MONO = "ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace";
 const SANS = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
 
-const TEX_W = 1024, TEX_H = 512;
-const CUT = 0.30; // how far from a seed before it becomes ocean
+const TEX_W = 2048, TEX_H = 1024;   // final texture
+const VOR_W = 512, VOR_H = 256;     // territory field, upscaled smoothly
+
+/* Each domain is a different planet, built on the same real landforms
+   so the geography stays legible. */
+export const PLANETS = {
+  maths: {
+    label: "Earth", flipX: false, flipY: false, rim: "#3D6FD4",
+    shallow: "#17385E", deep: "#080F1E", ice: "#DCE8F2",
+  },
+  physics: {
+    label: "Mars", flipX: true, flipY: false, rim: "#D4633D",
+    shallow: "#4A2415", deep: "#1A0C07", ice: "#F0E4DC",
+  },
+  strength: {
+    label: "Ice moon", flipX: false, flipY: true, rim: "#4FB4D4",
+    shallow: "#1B3A48", deep: "#0A161D", ice: "#EAF6FA",
+  },
+};
+
+const ANCHORS = [
+  { lat: 52, lon: 95 }, { lat: 4, lon: 21 }, { lat: 46, lon: -100 },
+  { lat: -13, lon: -58 }, { lat: 50, lon: 14 }, { lat: -24, lon: 134 },
+  { lat: 22, lon: 79 }, { lat: 62, lon: -42 },
+];
 
 function rng(seed) {
   let s = seed >>> 0;
   return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
 }
 const toRad = (d) => (d * Math.PI) / 180;
-
 function sph(latDeg, lonDeg) {
   const la = toRad(latDeg), lo = toRad(lonDeg);
   return [Math.cos(la) * Math.cos(lo), Math.sin(la), Math.cos(la) * Math.sin(lo)];
 }
 const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
-/* Each world is a different planet, but all built on real Earth landforms
-   so the geography stays readable. Mars mirrors it, the ice moon flips it. */
-export const PLANETS = {
-  maths:    { label: "Earth",      flipX: false, flipY: false, sea: [8, 16, 32],  seaDeep: [5, 10, 22], rim: "#3D6FD4" },
-  physics:  { label: "Mars",       flipX: true,  flipY: false, sea: [26, 12, 8],  seaDeep: [16, 7, 5],  rim: "#D4633D" },
-  strength: { label: "Ice moon",   flipX: false, flipY: true,  sea: [14, 22, 30], seaDeep: [8, 14, 20], rim: "#4FB4D4" },
-};
-
-/* real landmasses to anchor each continent onto */
-const ANCHORS = [
-  { lat: 52, lon: 95 },    // northern Asia
-  { lat: 4, lon: 21 },     // central Africa
-  { lat: 46, lon: -100 },  // North America
-  { lat: -13, lon: -58 },  // South America
-  { lat: 50, lon: 14 },    // Europe
-  { lat: -24, lon: 134 },  // Australia
-  { lat: 22, lon: 79 },    // India
-  { lat: 62, lon: -42 },   // Greenland
-];
-
 function placeWorld(world, seedNum) {
   const rand = rng(seedNum);
   const contIds = Object.keys(world.continents);
-  const contCenter = {};
-  contIds.forEach((c, i) => { contCenter[c] = ANCHORS[i % ANCHORS.length]; });
-
+  const cc = {};
+  contIds.forEach((c, i) => { cc[c] = ANCHORS[i % ANCHORS.length]; });
   const seeds = world.territories.map((t) => {
-    const cc = contCenter[t.continent];
+    const a = cc[t.continent];
     const inland = 0.35 + (t.tier / 5) * 0.85;
     const ang = rand() * Math.PI * 2;
     const rad = 30 * inland * (0.35 + rand() * 0.85);
-    const lat = Math.max(-72, Math.min(78, cc.lat + Math.sin(ang) * rad * 0.72));
-    const lon = cc.lon + (Math.cos(ang) * rad) / Math.max(0.4, Math.cos(toRad(lat)));
+    const lat = Math.max(-72, Math.min(78, a.lat + Math.sin(ang) * rad * 0.72));
+    const lon = a.lon + (Math.cos(ang) * rad) / Math.max(0.4, Math.cos(toRad(lat)));
     return { ...t, lat, lon, v: sph(lat, lon) };
   });
-  return { seeds, contCenter };
+  return { seeds };
 }
 
-/* ---------- paint the map onto real coastlines ---------- */
-function paintTexture(seeds, world, prog, reachIds, selId, planet) {
-  const cv = document.createElement("canvas");
-  cv.width = TEX_W; cv.height = TEX_H;
-  const ctx = cv.getContext("2d");
-  const img = ctx.createImageData(TEX_W, TEX_H);
-  const d = img.data;
+/* value-noise fbm for terrain grain */
+function fbm(x, y, rand) {
+  let v = 0, amp = 0.5, fx = x, fy = y;
+  for (let o = 0; o < 4; o++) {
+    const xi = Math.floor(fx), yi = Math.floor(fy);
+    const xf = fx - xi, yf = fy - yi;
+    const h = (a, b) => {
+      let n = a * 374761393 + b * 668265263;
+      n = (n ^ (n >> 13)) * 1274126177;
+      return ((n ^ (n >> 16)) >>> 0) / 4294967296;
+    };
+    const u = xf * xf * (3 - 2 * xf), w = yf * yf * (3 - 2 * yf);
+    const n = h(xi, yi) * (1 - u) * (1 - w) + h(xi + 1, yi) * u * (1 - w)
+            + h(xi, yi + 1) * (1 - u) * w + h(xi + 1, yi + 1) * u * w;
+    v += n * amp; amp *= 0.5; fx *= 2; fy *= 2;
+  }
+  return v;
+}
 
+function buildTexture(seeds, world, prog, reachIds, selId, planet) {
   const rgb = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
   const colorFor = (t) => {
     const depth = prog[t.id] || 0;
-    if (depth >= 4) return [138, 240, 176];
-    if (depth === 3) return [79, 180, 119];
-    if (depth === 2) return [54, 126, 86];
-    if (depth === 1) return [38, 84, 60];
-    if (reachIds.has(t.id)) return [122, 66, 40];
+    if (depth >= 4) return [142, 245, 180];
+    if (depth === 3) return [83, 186, 124];
+    if (depth === 2) return [56, 130, 88];
+    if (depth === 1) return [40, 88, 62];
+    if (reachIds.has(t.id)) return [128, 70, 42];
     const [r, g, b] = rgb(world.continents[t.continent]?.hue || "#2A3140");
-    return [Math.round(r * 0.26 + 22), Math.round(g * 0.26 + 24), Math.round(b * 0.26 + 30)];
+    return [Math.round(r * 0.30 + 26), Math.round(g * 0.30 + 28), Math.round(b * 0.30 + 33)];
   };
+
+  /* --- territory field at low res --- */
+  const n = seeds.length;
   const colors = seeds.map(colorFor);
   const invW = seeds.map((t) => 1 / Math.sqrt(t.w));
-  const n = seeds.length;
   const sx = new Float64Array(n), sy = new Float64Array(n), sz = new Float64Array(n);
   seeds.forEach((t, i) => { sx[i] = t.v[0]; sy[i] = t.v[1]; sz[i] = t.v[2]; });
 
-  const isLand = (tx, ty) => {
-    let mx = Math.floor((tx / TEX_W) * MASK_W), my = Math.floor((ty / TEX_H) * MASK_H);
-    if (planet.flipX) mx = MASK_W - 1 - mx;
-    if (planet.flipY) my = MASK_H - 1 - my;
-    return landAt(mx, my);
-  };
-
-  const owner = new Int16Array(TEX_W * TEX_H).fill(-1);
-
-  for (let y = 0; y < TEX_H; y++) {
-    const lat = 90 - ((y + 0.5) / TEX_H) * 180;
+  const small = document.createElement("canvas");
+  small.width = VOR_W; small.height = VOR_H;
+  const sctx = small.getContext("2d");
+  const sim = sctx.createImageData(VOR_W, VOR_H);
+  const sd = sim.data;
+  for (let y = 0; y < VOR_H; y++) {
+    const lat = 90 - ((y + 0.5) / VOR_H) * 180;
     const cl = Math.cos(toRad(lat)), py = Math.sin(toRad(lat));
-    for (let x = 0; x < TEX_W; x++) {
-      const o = (y * TEX_W + x) * 4;
-      if (!isLand(x, y)) {
-        // ocean, deepening away from the coast
-        const near = isLand(x + 3, y) || isLand(x - 3, y) || isLand(x, y + 3) || isLand(x, y - 3);
-        const c = near ? planet.sea : planet.seaDeep;
-        d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2]; d[o + 3] = 255;
-        continue;
-      }
-      const lo = toRad(((x + 0.5) / TEX_W) * 360 - 180);
+    for (let x = 0; x < VOR_W; x++) {
+      const lo = toRad(((x + 0.5) / VOR_W) * 360 - 180);
       const px = cl * Math.cos(lo), pz = cl * Math.sin(lo);
-      let best = 0, bd = Infinity, second = Infinity;
+      let best = 0, bd = Infinity;
       for (let i = 0; i < n; i++) {
         let c = px * sx[i] + py * sy[i] + pz * sz[i];
         c = c > 1 ? 1 : c < -1 ? -1 : c;
         const eff = Math.acos(c) * invW[i];
-        if (eff < bd) { second = bd; bd = eff; best = i; }
-        else if (eff < second) second = eff;
+        if (eff < bd) { bd = eff; best = i; }
       }
-      owner[y * TEX_W + x] = best;
-      let col = colors[best].slice();
-      if (second - bd < 0.010) col = [col[0] * 0.45 + 34, col[1] * 0.45 + 38, col[2] * 0.45 + 46];
-      if (seeds[best].id === selId) col = [col[0] * 0.5 + 122, col[1] * 0.5 + 118, col[2] * 0.5 + 108];
-      d[o] = col[0]; d[o + 1] = col[1]; d[o + 2] = col[2]; d[o + 3] = 255;
+      const col = colors[best];
+      const o = (y * VOR_W + x) * 4;
+      sd[o] = col[0]; sd[o + 1] = col[1]; sd[o + 2] = col[2]; sd[o + 3] = 255;
     }
   }
+  sctx.putImageData(sim, 0, 0);
 
-  // bright coastline so continents read clearly
-  for (let y = 1; y < TEX_H - 1; y++) {
-    for (let x = 0; x < TEX_W; x++) {
-      if (owner[y * TEX_W + x] < 0) continue;
-      const edge = owner[y * TEX_W + ((x + 1) % TEX_W)] < 0 || owner[y * TEX_W + ((x - 1 + TEX_W) % TEX_W)] < 0
-        || owner[(y + 1) * TEX_W + x] < 0 || owner[(y - 1) * TEX_W + x] < 0;
-      if (!edge) continue;
+  /* --- compose the real map --- */
+  const cv = document.createElement("canvas");
+  cv.width = TEX_W; cv.height = TEX_H;
+  const ctx = cv.getContext("2d");
+
+  // ocean with a depth gradient
+  const og = ctx.createLinearGradient(0, 0, 0, TEX_H);
+  og.addColorStop(0, planet.deep);
+  og.addColorStop(0.5, planet.shallow);
+  og.addColorStop(1, planet.deep);
+  ctx.fillStyle = og;
+  ctx.fillRect(0, 0, TEX_W, TEX_H);
+
+  // land path from real coastlines
+  const rings = coastRings();
+  const path = new Path2D();
+  for (const r of rings) {
+    for (let i = 0; i < r.length; i++) {
+      let lon = r[i][0], lat = r[i][1];
+      if (planet.flipX) lon = -lon;
+      if (planet.flipY) lat = -lat;
+      const x = ((lon + 180) / 360) * TEX_W;
+      const y = ((90 - lat) / 180) * TEX_H;
+      if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
+    }
+    path.closePath();
+  }
+
+  ctx.save();
+  ctx.clip(path, "evenodd");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(small, 0, 0, TEX_W, TEX_H);
+
+  // terrain grain so land isn't flat colour
+  const grain = ctx.getImageData(0, 0, TEX_W, TEX_H);
+  const gd = grain.data;
+  for (let y = 0; y < TEX_H; y += 1) {
+    for (let x = 0; x < TEX_W; x += 1) {
       const o = (y * TEX_W + x) * 4;
-      d[o] = d[o] * 0.6 + 78; d[o + 1] = d[o + 1] * 0.6 + 84; d[o + 2] = d[o + 2] * 0.6 + 92;
+      if (gd[o + 3] === 0) continue;
+      const nv = fbm(x / 26, y / 26) - 0.42;
+      const k = 1 + nv * 0.55;
+      gd[o] = Math.max(0, Math.min(255, gd[o] * k));
+      gd[o + 1] = Math.max(0, Math.min(255, gd[o + 1] * k));
+      gd[o + 2] = Math.max(0, Math.min(255, gd[o + 2] * k));
     }
   }
+  ctx.putImageData(grain, 0, 0);
+  ctx.restore();
 
-  ctx.putImageData(img, 0, 0);
+  // crisp coastline
+  ctx.save();
+  ctx.strokeStyle = "rgba(196,214,232,.5)";
+  ctx.lineWidth = 1.6;
+  ctx.lineJoin = "round";
+  ctx.stroke(path);
+  ctx.restore();
+
+  // polar ice
+  const cap = (from, to, y0, y1) => {
+    const g = ctx.createLinearGradient(0, y0, 0, y1);
+    g.addColorStop(0, from); g.addColorStop(1, to);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, Math.min(y0, y1), TEX_W, Math.abs(y1 - y0));
+  };
+  cap(planet.ice, "rgba(255,255,255,0)", 0, TEX_H * 0.075);
+  cap("rgba(255,255,255,0)", planet.ice, TEX_H * 0.915, TEX_H);
+
+  // selected territory outline, drawn from the low-res field
+  if (selId) {
+    const si = seeds.findIndex((t) => t.id === selId);
+    if (si >= 0) {
+      ctx.save();
+      ctx.clip(path, "evenodd");
+      const d2 = sctx.getImageData(0, 0, VOR_W, VOR_H).data;
+      const target = colors[si];
+      ctx.fillStyle = "rgba(255,255,255,.30)";
+      for (let y = 0; y < VOR_H; y++) {
+        for (let x = 0; x < VOR_W; x++) {
+          const o = (y * VOR_W + x) * 4;
+          if (d2[o] === target[0] && d2[o + 1] === target[1] && d2[o + 2] === target[2]) {
+            ctx.fillRect((x / VOR_W) * TEX_W, (y / VOR_H) * TEX_H, TEX_W / VOR_W, TEX_H / VOR_H);
+          }
+        }
+      }
+      ctx.restore();
+    }
+  }
   return cv;
 }
 
@@ -167,8 +244,8 @@ export default function Atlas({ progress, setProgress }) {
   const drag = useRef({ on: false, x: 0, y: 0, moved: 0 });
 
   const world = WORLDS[worldId];
-  const seedNum = worldId === "maths" ? 7 : worldId === "physics" ? 23 : 41;
   const planet = PLANETS[worldId] || PLANETS.maths;
+  const seedNum = worldId === "maths" ? 7 : worldId === "physics" ? 23 : 41;
   const { seeds } = useMemo(() => placeWorld(world, seedNum), [worldId]);
 
   const prog = progress || {};
@@ -180,29 +257,34 @@ export default function Atlas({ progress, setProgress }) {
   useEffect(() => {
     const el = mount.current;
     if (!el || typeof window === "undefined") return;
-    const size = el.clientWidth || 400;
+    const size = el.clientWidth || 420;
 
     const scene = new THREE.Scene();
-    const cam = new THREE.PerspectiveCamera(38, 1, 0.1, 100);
-    cam.position.set(0, 0, 3.1);
+    const cam = new THREE.PerspectiveCamera(36, 1, 0.1, 100);
+    cam.position.set(0, 0, 3.15);
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(size, size);
     el.appendChild(renderer.domElement);
 
     const globe = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 96, 64),
-      new THREE.MeshBasicMaterial({ color: 0xffffff })
+      new THREE.SphereGeometry(1, 128, 96),
+      new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 9, specular: 0x223044 })
     );
     scene.add(globe);
 
+    scene.add(new THREE.AmbientLight(0xffffff, 0.62));
+    const sun = new THREE.DirectionalLight(0xfff4e6, 1.05);
+    sun.position.set(-1.5, 0.85, 2.4);
+    scene.add(sun);
+
     const atmo = new THREE.Mesh(
-      new THREE.SphereGeometry(1.12, 64, 48),
+      new THREE.SphereGeometry(1.13, 64, 48),
       new THREE.ShaderMaterial({
         transparent: true, side: THREE.BackSide, blending: THREE.AdditiveBlending, depthWrite: false,
-        uniforms: { uColor: { value: new THREE.Color("#3D6FD4") } },
+        uniforms: { uColor: { value: new THREE.Color(planet.rim) } },
         vertexShader: "varying vec3 vN; void main(){ vN = normalize(normalMatrix * normal); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }",
-        fragmentShader: "varying vec3 vN; uniform vec3 uColor; void main(){ float i = pow(0.62 - dot(vN, vec3(0.0,0.0,1.0)), 3.4) * 0.85; gl_FragColor = vec4(uColor,1.0) * clamp(i,0.0,1.0); }",
+        fragmentShader: "varying vec3 vN; uniform vec3 uColor; void main(){ float i = pow(0.60 - dot(vN, vec3(0.0,0.0,1.0)), 3.2) * 0.9; gl_FragColor = vec4(uColor,1.0) * clamp(i,0.0,1.0); }",
       })
     );
     scene.add(atmo);
@@ -216,7 +298,7 @@ export default function Atlas({ progress, setProgress }) {
       pts[i * 3 + 2] = r * Math.cos(ph);
     }
     sg.setAttribute("position", new THREE.BufferAttribute(pts, 3));
-    scene.add(new THREE.Points(sg, new THREE.PointsMaterial({ color: 0x8898b4, size: 0.13, sizeAttenuation: true, transparent: true, opacity: 0.7 })));
+    scene.add(new THREE.Points(sg, new THREE.PointsMaterial({ color: 0x9aa8c0, size: 0.12, sizeAttenuation: true, transparent: true, opacity: 0.66 })));
 
     three.current = { scene, cam, renderer, globe, atmo, rot: { x: 0, y: 0 }, spin: true };
     setReady(true);
@@ -224,7 +306,7 @@ export default function Atlas({ progress, setProgress }) {
     let raf;
     const loop = () => {
       const t = three.current;
-      if (t.spin && !drag.current.on) t.rot.y += 0.0015;
+      if (t.spin && !drag.current.on) t.rot.y += 0.0013;
       t.globe.rotation.y = t.rot.y; t.globe.rotation.x = t.rot.x;
       t.renderer.render(t.scene, t.cam);
       raf = requestAnimationFrame(loop);
@@ -232,7 +314,7 @@ export default function Atlas({ progress, setProgress }) {
     loop();
 
     const onResize = () => {
-      const s = el.clientWidth || 400;
+      const s = el.clientWidth || 420;
       renderer.setSize(s, s); cam.aspect = 1; cam.updateProjectionMatrix();
     };
     window.addEventListener("resize", onResize);
@@ -245,7 +327,6 @@ export default function Atlas({ progress, setProgress }) {
   }, []);
 
   useEffect(() => { if (three.current) three.current.spin = spin; }, [spin]);
-
   useEffect(() => {
     const t = three.current;
     if (t && t.atmo) t.atmo.material.uniforms.uColor.value.set(planet.rim);
@@ -254,10 +335,12 @@ export default function Atlas({ progress, setProgress }) {
   useEffect(() => {
     const t = three.current;
     if (!ready || !t.globe) return;
-    const cv = paintTexture(seeds, world, prog, reachIds, sel, planet);
+    const cv = buildTexture(seeds, world, prog, reachIds, sel, planet);
     const tex = new THREE.CanvasTexture(cv);
     if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = 4;
+    tex.anisotropy = 8;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.generateMipmaps = true;
     if (t.globe.material.map) t.globe.material.map.dispose();
     t.globe.material.map = tex;
     t.globe.material.needsUpdate = true;
@@ -331,7 +414,7 @@ export default function Atlas({ progress, setProgress }) {
       </div>
 
       <div className="atlas-grid">
-        <div style={{ background: "#070A0F", border: `1px solid ${C.rule}`, borderRadius: 10, position: "relative", overflow: "hidden" }}>
+        <div style={{ background: "#05070B", border: `1px solid ${C.rule}`, borderRadius: 10, position: "relative", overflow: "hidden" }}>
           <div ref={mount}
             onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={() => { drag.current.on = false; }}
             onTouchStart={onDown} onTouchMove={onMove} onTouchEnd={onUp}
@@ -342,12 +425,12 @@ export default function Atlas({ progress, setProgress }) {
           </div>
 
           <button onClick={() => setSpin(!spin)} style={{
-            position: "absolute", right: 10, bottom: 10, background: "rgba(25,30,40,.9)",
+            position: "absolute", right: 10, bottom: 10, background: "rgba(20,25,34,.9)",
             color: spin ? C.signal : C.dim, border: `1px solid ${C.rule}`, borderRadius: 6,
             padding: "6px 11px", cursor: "pointer", fontFamily: MONO, fontSize: 10, letterSpacing: 1,
           }}>{spin ? "SPINNING" : "PAUSED"}</button>
 
-          <div style={{ position: "absolute", left: 11, bottom: 11, fontFamily: MONO, fontSize: 9.5, color: "rgba(124,134,152,.65)", pointerEvents: "none" }}>
+          <div style={{ position: "absolute", left: 11, bottom: 11, fontFamily: MONO, fontSize: 9.5, color: "rgba(124,134,152,.6)", pointerEvents: "none" }}>
             DRAG TO ROTATE · TAP LAND TO INSPECT
           </div>
         </div>
@@ -366,6 +449,7 @@ export default function Atlas({ progress, setProgress }) {
                 }}>
                   <span style={{ fontFamily: MONO, fontSize: 10, color: C.dim }}>{i + 1}</span>
                   <span style={{ flex: 1, fontSize: 13, color: on ? C.bone : C.dim }}>{w.name}</span>
+                  <span style={{ fontFamily: MONO, fontSize: 10, color: C.dim }}>{PLANETS[w.id]?.label}</span>
                   <span style={{ fontFamily: MONO, fontSize: 11, color: on ? C.moss : C.dim }}>{c.heldPct.toFixed(0)}%</span>
                 </button>
               );
@@ -447,8 +531,8 @@ export default function Atlas({ progress, setProgress }) {
           </Panel>
 
           <Panel title="Legend">
-            {[["Generative", "#7FE8A8"], ["Fluent", "#4FB477"], ["Worked", "#388258"],
-              ["Skimmed", "#28583E"], ["Reachable", "#683824"], ["Unexplored", "#1A1F29"], ["Ocean", "#0A0E16"]].map(([l, c]) => (
+            {[["Generative", "#8EF5B4"], ["Fluent", "#53BA7C"], ["Worked", "#387E58"],
+              ["Skimmed", "#26543C"], ["Reachable", "#80462A"], ["Unexplored", "#1E232C"], ["Ocean", "#17385E"]].map(([l, c]) => (
               <div key={l} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0" }}>
                 <span style={{ width: 13, height: 13, background: c, border: `1px solid ${C.rule}`, borderRadius: 3, flexShrink: 0 }} />
                 <span style={{ fontSize: 12, color: C.dim }}>{l}</span>
