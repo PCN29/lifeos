@@ -920,223 +920,309 @@ function VCE({ state, setState }) {
   );
 }
 /* ============================== DASHBOARD ============================== */
+const RANGES = [
+  { id: "7", label: "7 days", days: 7 },
+  { id: "30", label: "30 days", days: 30 },
+  { id: "90", label: "90 days", days: 90 },
+  { id: "all", label: "All time", days: null },
+];
+
 function Dashboard({ state, meta, viewDate }) {
+  const [rangeId, setRangeId] = useState("30");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
   const [hover, setHover] = useState(null);
   const days = state.days;
 
-  const daily = useMemo(() => {
-    const out = [];
-    for (let i = 29; i >= 0; i--) {
-      const k = key(addDays(new Date(), -i)), d = days[k];
-      out.push({ k, label: parseKey(k).getDate(), study: hrs(d?.study || 0), dev: hrs(d?.dev || 0) });
+  /* ---- work out the window ---- */
+  const { from, to, label, prevFrom, prevTo } = useMemo(() => {
+    const today = new Date();
+    if (customFrom && customTo) {
+      const f = parseKey(customFrom), t = parseKey(customTo);
+      const span = Math.max(1, Math.round((t - f) / 86400000) + 1);
+      return {
+        from: f, to: t, label: `${span} days`,
+        prevFrom: addDays(f, -span), prevTo: addDays(f, -1),
+      };
     }
-    return out;
-  }, [days]);
-
-  const weekly = useMemo(() => {
-    const out = [];
-    for (let i = 5; i >= 0; i--) {
-      const mk = key(mondayOf(addDays(new Date(), -i * 7))), w = weekStats(days, mk);
-      out.push({ k: mk, label: parseKey(mk).toLocaleDateString("en-AU", { day: "numeric", month: "short" }), pct: Math.round(w.score * 100), study: hrs(w.study), dev: hrs(w.dev) });
+    const r = RANGES.find((x) => x.id === rangeId) || RANGES[1];
+    if (!r.days) {
+      const keys = Object.keys(days).sort();
+      const f = keys.length ? parseKey(keys[0]) : today;
+      const span = Math.max(1, Math.round((today - f) / 86400000) + 1);
+      return { from: f, to: today, label: `${span} days`, prevFrom: null, prevTo: null };
     }
+    const f = addDays(today, -(r.days - 1));
+    return {
+      from: f, to: today, label: r.label,
+      prevFrom: addDays(f, -r.days), prevTo: addDays(f, -1),
+    };
+  }, [rangeId, customFrom, customTo, days]);
+
+  /* ---- totals for any window ---- */
+  const sumRange = (f, t) => {
+    if (!f || !t) return null;
+    const out = { study: 0, dev: 0, gym: 0, tennis: 0, active: 0, n: 0, best: null, bestMin: 0 };
+    let cur = new Date(f);
+    while (cur <= t) {
+      const k = key(cur);
+      const d = days[k];
+      out.n++;
+      if (d) {
+        out.study += d.study || 0;
+        out.dev += d.dev || 0;
+        if (d.gym) out.gym++;
+        if (d.tennis) out.tennis++;
+        const tot = (d.study || 0) + (d.dev || 0);
+        if (tot > 0) out.active++;
+        if (tot > out.bestMin) { out.bestMin = tot; out.best = k; }
+      }
+      cur = addDays(cur, 1);
+    }
+    out.total = out.study + out.dev;
+    out.perDay = out.n ? out.total / out.n : 0;
     return out;
-  }, [days]);
-
-  const thisWeek = useMemo(() => weekStats(days, key(mondayOf(new Date()))), [days]);
-  const donut = [
-    { name: "Done", value: Math.round(thisWeek.score * 100), fill: C.moss },
-    { name: "Left", value: 100 - Math.round(thisWeek.score * 100), fill: C.rule },
-  ];
-  const month = useMemo(() => {
-    const y = viewDate.getFullYear(), m = viewDate.getMonth();
-    const firstDow = (new Date(y, m, 1).getDay() + 6) % 7, n = new Date(y, m + 1, 0).getDate();
-    const cells = Array(firstDow).fill(null);
-    for (let i = 1; i <= n; i++) cells.push(key(new Date(y, m, i)));
-    return cells;
-  }, [viewDate]);
-
-  const habitBars = useMemo(() => {
-    const n = Object.keys(days).length || 1, all = Object.values(days);
-    return [
-      { l: "Study target", v: all.filter((d) => (d.study || 0) >= TARGETS.studyMin).length, n },
-      { l: "Dev target", v: all.filter((d) => (d.dev || 0) >= TARGETS.devMin).length, n },
-      { l: "Gym", v: cnt(state, "gym"), n }, { l: "Tennis", v: cnt(state, "tennis"), n },
-      { l: "Creatine", v: cnt(state, "creatine"), n },
-      { l: "Meds — day", v: cnt(state, "medDay"), n }, { l: "Meds — night", v: cnt(state, "medNight"), n },
-    ].sort((a, b) => b.v / b.n - a.v / a.n);
-  }, [days, state]);
-
-  const yieldInsight = useMemo(() => {
-    const rated = Object.values(days).filter((d) => d.studyRating > 0 && (d.study || 0) > 0);
-    if (rated.length < 4) return null;
-    const hi = rated.filter((d) => d.studyRating >= 4), lo = rated.filter((d) => d.studyRating <= 2);
-    if (!hi.length || !lo.length) return null;
-    const avg = (a) => Math.round(a.reduce((x, d) => x + d.study, 0) / a.length);
-    return { hi: avg(hi), lo: avg(lo), hiN: hi.length, loN: lo.length };
-  }, [days]);
-
-  const heat = (k) => {
-    const d = days[k];
-    if (!d) return C.plate2;
-    const t = (d.study || 0) + (d.dev || 0);
-    return t >= 240 ? C.moss : t >= 120 ? "rgba(79,180,119,.62)" : t >= 45 ? "rgba(79,180,119,.34)" : t > 0 ? "rgba(79,180,119,.16)" : C.plate2;
   };
-  const ChartTip = ({ active, payload }) => { if (active && payload?.length) setTimeout(() => setHover(payload[0].payload.k), 0); return null; };
-  const earned = BADGES.filter((b) => b.test(state, meta));
+
+  const cur = useMemo(() => sumRange(from, to), [from, to, days]);
+  const prev = useMemo(() => sumRange(prevFrom, prevTo), [prevFrom, prevTo, days]);
+
+  const delta = (a, b) => {
+    if (b === null || b === undefined || !b) return null;
+    return ((a - b) / b) * 100;
+  };
+
+  /* ---- daily series for the chart ---- */
+  const series = useMemo(() => {
+    const out = [];
+    let cursor = new Date(from);
+    while (cursor <= to) {
+      const k = key(cursor);
+      const d = days[k];
+      out.push({
+        k,
+        label: parseKey(k).getDate(),
+        study: Math.round(((d?.study || 0) / 60) * 10) / 10,
+        dev: Math.round(((d?.dev || 0) / 60) * 10) / 10,
+      });
+      cursor = addDays(cursor, 1);
+    }
+    return out;
+  }, [from, to, days]);
+
+  /* ---- contribution grid: weeks as columns ---- */
+  const grid = useMemo(() => {
+    const start = addDays(from, -((from.getDay() + 6) % 7));
+    const weeks = [];
+    let cursor = new Date(start);
+    while (cursor <= to) {
+      const col = [];
+      for (let i = 0; i < 7; i++) {
+        const k = key(cursor);
+        const inRange = cursor >= from && cursor <= to;
+        col.push({ k, inRange, d: days[k] });
+        cursor = addDays(cursor, 1);
+      }
+      weeks.push(col);
+    }
+    return weeks;
+  }, [from, to, days]);
+
+  const heat = (d) => {
+    if (!d) return "#161B24";
+    const t = (d.study || 0) + (d.dev || 0);
+    if (t >= 240) return "#38D97E";
+    if (t >= 150) return "#219E5C";
+    if (t >= 75) return "#186B41";
+    if (t > 0) return "#12452C";
+    return "#161B24";
+  };
+
+  const hd = hover ? days[hover] : null;
+  const splitPct = cur.total ? (cur.study / cur.total) * 100 : 50;
+
+  const Stat = ({ label, value, unit, d, colour }) => (
+    <div style={{ flex: "1 1 120px", minWidth: 108 }}>
+      <div style={{ fontFamily: MONO, fontSize: 9.5, letterSpacing: 1.1, color: C.dim, marginBottom: 4 }}>{label}</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
+        <span style={{ fontFamily: MONO, fontSize: 23, color: colour || C.bone, fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>{value}</span>
+        {unit && <span style={{ fontSize: 11.5, color: C.dim }}>{unit}</span>}
+      </div>
+      {d !== null && d !== undefined && isFinite(d) && (
+        <div style={{ fontFamily: MONO, fontSize: 10.5, marginTop: 4, color: d >= 0 ? C.moss : C.signal }}>
+          {d >= 0 ? "▲" : "▼"} {Math.abs(d).toFixed(0)}% <span style={{ color: C.dim }}>vs prev</span>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-        <Card style={{ flex: "1 1 200px", display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ width: 92, height: 92, position: "relative" }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={donut} dataKey="value" innerRadius={30} outerRadius={44} startAngle={90} endAngle={-270} stroke="none">
-                  {donut.map((e, i) => <Cell key={i} fill={e.fill} />)}
-                </Pie>
-              </PieChart>
-            </ResponsiveContainer>
-            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: MONO, fontSize: 18, color: C.bone }}>
-              {Math.round(thisWeek.score * 100)}%
-            </div>
-          </div>
-          <div>
-            <div style={{ fontFamily: MONO, fontSize: 10, color: C.dim, letterSpacing: 1.2 }}>THIS WEEK</div>
-            <div style={{ fontSize: 13, color: C.bone, marginTop: 5, lineHeight: 1.7 }}>
-              <div><span style={{ fontFamily: MONO, color: C.steel }}>{hrs(thisWeek.study)}h</span> study</div>
-              <div><span style={{ fontFamily: MONO, color: C.violet }}>{hrs(thisWeek.dev)}h</span> development</div>
-              <div><span style={{ fontFamily: MONO }}>{hrs(thisWeek.study + thisWeek.dev)}h</span> deep work</div>
-            </div>
-          </div>
-        </Card>
-        <Card style={{ flex: "1 1 200px" }}>
-          <Eyebrow>All time</Eyebrow>
-          <div style={{ fontSize: 13, lineHeight: 1.8, color: C.bone }}>
-            <div><span style={{ fontFamily: MONO, fontSize: 17 }}>{hrs(meta.totalDeep)}h</span> deep work logged</div>
-            <div><span style={{ fontFamily: MONO, fontSize: 17 }}>{Object.keys(days).length}</span> days tracked</div>
-            <div><span style={{ fontFamily: MONO, fontSize: 17 }}>{meta.bestStreak}</span> day best streak</div>
-          </div>
-        </Card>
-      </div>
+      {/* range picker */}
+      <Card style={{ padding: 12 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {RANGES.map((r) => (
+            <Btn key={r.id} active={!customFrom && rangeId === r.id}
+              onClick={() => { setRangeId(r.id); setCustomFrom(""); setCustomTo(""); }}
+              style={{ padding: "6px 11px", fontSize: 12.5 }}>{r.label}</Btn>
+          ))}
+          <span style={{ color: C.rule, margin: "0 2px" }}>|</span>
+          <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)}
+            style={{ ...inputStyle, flex: "0 0 138px", padding: "6px 8px", fontSize: 12.5 }} />
+          <span style={{ color: C.dim, fontSize: 12 }}>to</span>
+          <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)}
+            style={{ ...inputStyle, flex: "0 0 138px", padding: "6px 8px", fontSize: 12.5 }} />
+          {customFrom && customTo && (
+            <Btn onClick={() => { setCustomFrom(""); setCustomTo(""); }} style={{ padding: "6px 9px", fontSize: 12 }}>Clear</Btn>
+          )}
+        </div>
+        <div style={{ fontFamily: MONO, fontSize: 10.5, color: C.dim, marginTop: 9 }}>
+          {from.toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}
+          {" → "}
+          {to.toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}
+          {" · "}{label}
+        </div>
+      </Card>
 
+      {/* headline numbers */}
       <Card>
-        <Eyebrow right={<span style={{ fontFamily: MONO, fontSize: 10 }}><span style={{ color: C.steel }}>■ STUDY</span> <span style={{ color: C.violet }}>■ DEV</span></span>}>Daily progress — 30 days (hours)</Eyebrow>
-        <div style={{ height: 165 }} onMouseLeave={() => setHover(null)}>
+        <Eyebrow right={prev ? <span style={{ fontFamily: MONO, fontSize: 9.5, color: C.dim }}>COMPARED WITH THE PREVIOUS {label.toUpperCase()}</span> : null}>
+          Deep work in this window
+        </Eyebrow>
+        <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+          <Stat label="TOTAL" value={hrs(cur.total)} unit="h" d={prev ? delta(cur.total, prev.total) : null} />
+          <Stat label="STUDY" value={hrs(cur.study)} unit="h" colour={C.steel} d={prev ? delta(cur.study, prev.study) : null} />
+          <Stat label="DEVELOPMENT" value={hrs(cur.dev)} unit="h" colour={C.violet} d={prev ? delta(cur.dev, prev.dev) : null} />
+          <Stat label="AVG PER DAY" value={fmtHM(cur.perDay)} d={prev ? delta(cur.perDay, prev.perDay) : null} />
+          <Stat label="DAYS WORKED" value={`${cur.active}/${cur.n}`} d={prev ? delta(cur.active, prev.active) : null} />
+          <Stat label="GYM" value={cur.gym} unit="sessions" colour={C.moss} d={prev ? delta(cur.gym, prev.gym) : null} />
+        </div>
+      </Card>
+
+      {/* the split — the one number that matters most for you */}
+      <Card>
+        <Eyebrow right={
+          <span style={{ fontFamily: MONO, fontSize: 11 }}>
+            <span style={{ color: C.steel }}>{splitPct.toFixed(0)}% study</span>
+            <span style={{ color: C.dim }}> / </span>
+            <span style={{ color: C.violet }}>{(100 - splitPct).toFixed(0)}% dev</span>
+          </span>
+        }>Where the hours went</Eyebrow>
+        <div style={{ display: "flex", height: 14, borderRadius: 4, overflow: "hidden", background: C.rule }}>
+          <div style={{ width: `${splitPct}%`, background: C.steel, transition: "width .4s" }} />
+          <div style={{ width: `${100 - splitPct}%`, background: C.violet, transition: "width .4s" }} />
+        </div>
+        <div style={{ fontSize: 12, color: C.dim, marginTop: 9, lineHeight: 1.5 }}>
+          {cur.total === 0 ? "Nothing logged in this window."
+            : splitPct >= 55 ? "Study is ahead of development in this window."
+            : splitPct >= 45 ? "Roughly even split."
+            : `Development is taking ${(cur.dev / Math.max(1, cur.study)).toFixed(1)}× the hours study is.`}
+        </div>
+      </Card>
+
+      {/* daily bars */}
+      <Card>
+        <Eyebrow right={<span style={{ fontFamily: MONO, fontSize: 10 }}>
+          <span style={{ color: C.steel }}>■ STUDY</span> <span style={{ color: C.violet }}>■ DEV</span>
+        </span>}>Daily hours</Eyebrow>
+        <div style={{ height: 180 }} onMouseLeave={() => setHover(null)}>
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={daily} margin={{ top: 4, right: 0, left: -28, bottom: 0 }} barCategoryGap={2}>
-              <XAxis dataKey="label" tick={{ fill: C.dim, fontSize: 9, fontFamily: MONO }} axisLine={false} tickLine={false} interval={2} />
+            <BarChart data={series} margin={{ top: 4, right: 0, left: -28, bottom: 0 }} barCategoryGap={series.length > 60 ? 0 : 2}>
+              <CartesianGrid stroke={C.rule} vertical={false} />
+              <XAxis dataKey="label" tick={{ fill: C.dim, fontSize: 9, fontFamily: MONO }} axisLine={false} tickLine={false}
+                interval={Math.max(0, Math.floor(series.length / 12))} />
               <YAxis tick={{ fill: C.dim, fontSize: 10, fontFamily: MONO }} axisLine={false} tickLine={false} />
-              <Tooltip content={<ChartTip />} cursor={{ fill: "rgba(255,255,255,.05)" }} />
+              <Tooltip cursor={{ fill: "rgba(255,255,255,.05)" }}
+                content={({ active, payload }) => {
+                  if (active && payload?.length) setTimeout(() => setHover(payload[0].payload.k), 0);
+                  return null;
+                }} />
               <Bar dataKey="study" stackId="a" fill={C.steel} />
               <Bar dataKey="dev" stackId="a" fill={C.violet} radius={[2, 2, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
         <div style={{ borderTop: `1px solid ${C.rule}`, marginTop: 10, paddingTop: 10 }}>
-          <DayDetail d={hover ? days[hover] : null} dateKey={hover} />
+          <DayDetail d={hd} dateKey={hover} />
         </div>
       </Card>
 
+      {/* contribution grid */}
       <Card>
-        <Eyebrow>Weekly completion — last 6 weeks</Eyebrow>
-        <div style={{ height: 145 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={weekly} margin={{ top: 4, right: 0, left: -28, bottom: 0 }}>
-              <CartesianGrid stroke={C.rule} vertical={false} />
-              <XAxis dataKey="label" tick={{ fill: C.dim, fontSize: 10, fontFamily: MONO }} axisLine={false} tickLine={false} />
-              <YAxis domain={[0, 100]} tick={{ fill: C.dim, fontSize: 10, fontFamily: MONO }} axisLine={false} tickLine={false} />
-              <Tooltip contentStyle={{ background: C.plate2, border: `1px solid ${C.rule}`, borderRadius: 7, fontSize: 12, fontFamily: MONO }} labelStyle={{ color: C.dim }} cursor={{ fill: "rgba(255,255,255,.05)" }} />
-              <Bar dataKey="pct" name="completion %" radius={[3, 3, 0, 0]}>
-                {weekly.map((w, i) => <Cell key={i} fill={w.pct >= 80 ? C.moss : w.pct >= 50 ? C.amber : C.signal} />)}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </Card>
-
-      <Card>
-        <Eyebrow>Study vs development — where the hours went</Eyebrow>
-        <div style={{ height: 145 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={weekly} margin={{ top: 4, right: 4, left: -28, bottom: 0 }}>
-              <CartesianGrid stroke={C.rule} vertical={false} />
-              <XAxis dataKey="label" tick={{ fill: C.dim, fontSize: 10, fontFamily: MONO }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: C.dim, fontSize: 10, fontFamily: MONO }} axisLine={false} tickLine={false} />
-              <Tooltip contentStyle={{ background: C.plate2, border: `1px solid ${C.rule}`, borderRadius: 7, fontSize: 12, fontFamily: MONO }} labelStyle={{ color: C.dim }} />
-              <Line type="monotone" dataKey="study" stroke={C.steel} strokeWidth={2} dot={{ r: 3 }} />
-              <Line type="monotone" dataKey="dev" stroke={C.violet} strokeWidth={2} dot={{ r: 3 }} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </Card>
-
-      <Card>
-        <Eyebrow right={<span style={{ fontFamily: MONO, fontSize: 10, color: C.dim }}>{viewDate.toLocaleDateString("en-AU", { month: "long", year: "numeric" }).toUpperCase()}</span>}>Month at a glance</Eyebrow>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4 }} onMouseLeave={() => setHover(null)}>
-          {["M", "T", "W", "T", "F", "S", "S"].map((d, i) => <div key={i} style={{ fontFamily: MONO, fontSize: 9, color: C.dim, textAlign: "center", marginBottom: 2 }}>{d}</div>)}
-          {month.map((k, i) => k === null ? <div key={i} /> : (
-            <div key={i} onMouseEnter={() => setHover(k)} onClick={() => setHover(k)} style={{
-              aspectRatio: "1", background: heat(k), borderRadius: 5, border: `1px solid ${hover === k ? C.signal : C.rule}`,
-              cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-              fontFamily: MONO, fontSize: 10, color: days[k] ? C.ink : C.dim, transition: "border-color .12s",
-            }}>{parseKey(k).getDate()}</div>
-          ))}
-        </div>
-        <div style={{ borderTop: `1px solid ${C.rule}`, marginTop: 12, paddingTop: 10 }}>
-          <DayDetail d={hover ? days[hover] : null} dateKey={hover} />
-        </div>
-      </Card>
-
-      <Card>
-        <Eyebrow>Habit analysis — all tracked days</Eyebrow>
-        {habitBars.map((h) => {
-          const p = h.v / h.n;
-          return (
-            <div key={h.l} style={{ marginBottom: 9 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
-                <span style={{ color: C.bone }}>{h.l}</span>
-                <span style={{ fontFamily: MONO, color: C.dim }}>{h.v}/{h.n} · {Math.round(p * 100)}%</span>
+        <Eyebrow right={
+          <span style={{ display: "flex", alignItems: "center", gap: 5, fontFamily: MONO, fontSize: 9.5, color: C.dim }}>
+            LESS
+            {["#161B24", "#12452C", "#186B41", "#219E5C", "#38D97E"].map((c) => (
+              <span key={c} style={{ width: 10, height: 10, background: c, borderRadius: 2, display: "inline-block" }} />
+            ))}
+            MORE
+          </span>
+        }>Every day in this window</Eyebrow>
+        <div style={{ overflowX: "auto", paddingBottom: 4 }}>
+          <div style={{ display: "flex", gap: 3, minWidth: "min-content" }}>
+            {grid.map((week, wi) => (
+              <div key={wi} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                {week.map((cell) => (
+                  <div key={cell.k}
+                    onMouseEnter={() => cell.inRange && setHover(cell.k)}
+                    title={cell.inRange ? parseKey(cell.k).toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" }) : ""}
+                    style={{
+                      width: 13, height: 13, borderRadius: 3, flexShrink: 0,
+                      background: cell.inRange ? heat(cell.d) : "transparent",
+                      border: hover === cell.k ? `1px solid ${C.bone}` : "1px solid transparent",
+                      cursor: cell.inRange ? "pointer" : "default",
+                      transition: "border-color .12s",
+                    }} />
+                ))}
               </div>
-              <div style={{ height: 5, background: C.rule, borderRadius: 3 }}>
-                <div style={{ height: "100%", width: `${p * 100}%`, borderRadius: 3, transition: "width .4s", background: p >= .8 ? C.moss : p >= .4 ? C.amber : C.signal }} />
-              </div>
-            </div>
-          );
-        })}
+            ))}
+          </div>
+        </div>
+        <div style={{ fontSize: 11.5, color: C.dim, marginTop: 9 }}>
+          One column per week, Monday at the top. Hover to read the day back above.
+        </div>
       </Card>
 
-      {yieldInsight && (
-        <Card style={{ borderColor: C.amber }}>
-          <Eyebrow>Time vs yield</Eyebrow>
-          <div style={{ fontSize: 13.5, color: C.bone, lineHeight: 1.65 }}>
-            Your <strong>4–5 star</strong> study days averaged <span style={{ fontFamily: MONO, color: C.moss }}>{yieldInsight.hi}m</span> ({yieldInsight.hiN} days).
-            Your <strong>1–2 star</strong> days averaged <span style={{ fontFamily: MONO, color: C.signal }}>{yieldInsight.lo}m</span> ({yieldInsight.loN} days).
-          </div>
-          <div style={{ fontSize: 12, color: C.dim, marginTop: 7, lineHeight: 1.5 }}>
-            {yieldInsight.lo >= yieldInsight.hi
-              ? "Longer sessions are scoring worse. Length isn't the problem — read the notes on the low days."
-              : "Longer sessions are scoring better, so protecting block length is worth it."}
-          </div>
-        </Card>
-      )}
-
-      <Card>
-        <Eyebrow>Achievements — {earned.length} / {BADGES.length}</Eyebrow>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(140px,1fr))", gap: 8 }}>
-          {BADGES.map((b) => {
-            const got = earned.includes(b);
+      {/* consistency + notable days */}
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+        <Card style={{ flex: "1 1 260px" }}>
+          <Eyebrow>Habits in this window</Eyebrow>
+          {[
+            { l: "Gym", v: cur.gym, t: Math.round((cur.n / 7) * TARGETS.gymPerWeek) },
+            { l: "Tennis", v: cur.tennis, t: Math.round((cur.n / 7) * TARGETS.tennisPerWeek) },
+            { l: "Days worked", v: cur.active, t: cur.n },
+          ].map((h) => {
+            const p = h.t ? Math.min(1, h.v / h.t) : 0;
             return (
-              <div key={b.id} style={{ background: got ? "rgba(242,180,65,.08)" : C.plate2, border: `1px solid ${got ? C.amber : C.rule}`, borderRadius: 8, padding: 10, opacity: got ? 1 : .45 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
-                  <Trophy size={13} color={got ? C.amber : C.dim} />
-                  <span style={{ fontSize: 12.5, color: got ? C.bone : C.dim, fontWeight: 600 }}>{b.name}</span>
+              <div key={h.l} style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 4 }}>
+                  <span style={{ color: C.bone }}>{h.l}</span>
+                  <span style={{ fontFamily: MONO, color: p >= 1 ? C.moss : C.dim }}>{h.v} / {h.t}</span>
                 </div>
-                <div style={{ fontSize: 11, color: C.dim, lineHeight: 1.4 }}>{b.desc}</div>
+                <div style={{ height: 5, background: C.rule, borderRadius: 3 }}>
+                  <div style={{ height: "100%", width: `${p * 100}%`, borderRadius: 3, background: p >= 1 ? C.moss : p >= .5 ? C.amber : C.signal, transition: "width .4s" }} />
+                </div>
               </div>
             );
           })}
-        </div>
-      </Card>
+        </Card>
+
+        <Card style={{ flex: "1 1 260px" }}>
+          <Eyebrow>Notable</Eyebrow>
+          <div style={{ fontSize: 13, lineHeight: 2, color: C.bone }}>
+            <div>
+              <span style={{ color: C.dim }}>Best day: </span>
+              {cur.best
+                ? <>{parseKey(cur.best).toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" })}
+                    <span style={{ fontFamily: MONO, color: C.moss }}> {fmtHM(cur.bestMin)}</span></>
+                : "—"}
+            </div>
+            <div><span style={{ color: C.dim }}>Longest streak ever: </span><span style={{ fontFamily: MONO }}>{meta.bestStreak} days</span></div>
+            <div><span style={{ color: C.dim }}>All-time deep work: </span><span style={{ fontFamily: MONO }}>{hrs(meta.totalDeep)}h</span></div>
+            <div><span style={{ color: C.dim }}>Days on record: </span><span style={{ fontFamily: MONO }}>{Object.keys(days).length}</span></div>
+          </div>
+        </Card>
+      </div>
     </div>
   );
 }
