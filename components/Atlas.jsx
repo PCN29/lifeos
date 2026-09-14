@@ -14,13 +14,13 @@ const SANS = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
 
 /* Deliberately modest — coastlines are vector so they stay sharp, and this
    is what keeps the tab alive on a Chromebook. */
-const TEX_W = 1024, TEX_H = 512;
+const TEX_W = 2048, TEX_H = 1024;
 const VOR_W = 360, VOR_H = 180;
 
 export const PLANETS = {
-  maths:    { label: "Earth",    flipX: false, flipY: false, rim: "#4E8CFF", shallow: "#12457F", deep: "#061225", ice: "rgba(226,240,255,.8)" },
-  physics:  { label: "Mars",     flipX: true,  flipY: false, rim: "#FF7A45", shallow: "#6B2E14", deep: "#200C05", ice: "rgba(255,236,224,.75)" },
-  strength: { label: "Ice moon", flipX: false, flipY: true,  rim: "#54CFF0", shallow: "#14495C", deep: "#061820", ice: "rgba(232,250,255,.85)" },
+  maths:    { label: "Earth",    flipX: false, flipY: false, rim: "#4E8CFF", shallow: "#12457F", deep: "#061225", ice: "rgba(226,240,255,.8)", iceSolid: "#C9DCEF" },
+  physics:  { label: "Mars",     flipX: true,  flipY: false, rim: "#FF7A45", shallow: "#6B2E14", deep: "#200C05", ice: "rgba(255,236,224,.75)", iceSolid: "#E8D3C6" },
+  strength: { label: "Ice moon", flipX: false, flipY: true,  rim: "#54CFF0", shallow: "#14495C", deep: "#061820", ice: "rgba(232,250,255,.85)", iceSolid: "#DCF0F7" },
 };
 
 const ANCHORS = [
@@ -47,7 +47,7 @@ function placeWorld(world, seedNum) {
     const inland = 0.35 + (t.tier / 5) * 0.85;
     const ang = rand() * Math.PI * 2;
     const rad = 30 * inland * (0.35 + rand() * 0.85);
-    const lat = Math.max(-70, Math.min(74, a.lat + Math.sin(ang) * rad * 0.72));
+    const lat = Math.max(-62, Math.min(66, a.lat + Math.sin(ang) * rad * 0.72));
     const lon = a.lon + (Math.cos(ang) * rad) / Math.max(0.4, Math.cos(toRad(lat)));
     return { ...t, lat, lon, v: sph(lat, lon) };
   });
@@ -135,7 +135,7 @@ export default function Atlas({ progress, setProgress }) {
   const mount = useRef(null);
   const three = useRef({});
   const drag = useRef({ on: false, x: 0, y: 0, moved: 0 });
-  const rafPending = useRef(false);
+  const lastHover = useRef(0);
   const canvases = useRef({});
 
   const world = WORLDS[worldId];
@@ -184,7 +184,7 @@ export default function Atlas({ progress, setProgress }) {
 
     const globe = new THREE.Mesh(
       new THREE.SphereGeometry(1, 96, 64),
-      new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 12, specular: 0x2b3d55 })
+      new THREE.MeshLambertMaterial({ color: 0xffffff })
     );
     scene.add(globe);
 
@@ -205,8 +205,8 @@ export default function Atlas({ progress, setProgress }) {
     scene.add(atmo);
 
     const marker = new THREE.Mesh(
-      new THREE.RingGeometry(0.03, 0.048, 24),
-      new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: 0.92, depthTest: false })
+      new THREE.RingGeometry(0.045, 0.068, 32),
+      new THREE.MeshBasicMaterial({ color: 0xFF6B35, side: THREE.DoubleSide, transparent: true, opacity: 0.95, depthTest: false })
     );
     marker.visible = false;
     globe.add(marker);
@@ -223,16 +223,41 @@ export default function Atlas({ progress, setProgress }) {
     const starMat = new THREE.PointsMaterial({ color: 0xa8b6cc, size: 0.11, sizeAttenuation: true, transparent: true, opacity: 0.6 });
     scene.add(new THREE.Points(sg, starMat));
 
-    three.current = { scene, cam, renderer, globe, atmo, marker, rot: { x: 0, y: 0 }, spin: true, alive: true };
+    three.current = {
+      scene, cam, renderer, globe, atmo, marker,
+      rot: { x: 0, y: 0 }, target: null, spin: true, alive: true, t0: performance.now(),
+    };
     setReady(true);
 
     let id;
     const loop = () => {
       const t = three.current;
       if (!t.alive) return;
-      if (t.spin && !drag.current.on) t.rot.y += 0.0012;
+      const now = performance.now();
+
+      // glide toward a fly-to target instead of snapping
+      if (t.target) {
+        let dy = t.target.y - t.rot.y;
+        while (dy > Math.PI) dy -= Math.PI * 2;
+        while (dy < -Math.PI) dy += Math.PI * 2;
+        const dx = t.target.x - t.rot.x;
+        if (Math.abs(dy) < 0.002 && Math.abs(dx) < 0.002) {
+          t.rot.y = t.target.y; t.rot.x = t.target.x; t.target = null;
+        } else {
+          t.rot.y += dy * 0.085;
+          t.rot.x += dx * 0.085;
+        }
+      } else if (t.spin && !drag.current.on) {
+        t.rot.y += 0.0012;
+      }
+
       t.globe.rotation.y = t.rot.y;
       t.globe.rotation.x = t.rot.x;
+
+      if (t.marker.visible) {
+        const s = 1 + 0.16 * Math.sin(now / 240);
+        t.marker.scale.set(s, s, 1);
+      }
       t.renderer.render(t.scene, t.cam);
       id = requestAnimationFrame(loop);
     };
@@ -315,21 +340,28 @@ export default function Atlas({ progress, setProgress }) {
     ctx.restore();
 
     ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, TEX_H * 0.13, TEX_W, TEX_H * 0.74);
+    ctx.clip();
     ctx.strokeStyle = "rgba(190,214,238,.55)";
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 1.7;
     ctx.lineJoin = "round";
     ctx.stroke(path);
     ctx.restore();
 
-    /* Small polar fade only. Anything larger smears into a white disc,
-       because every longitude collapses to one point at the pole. */
-    const capH = TEX_H * 0.03;
-    let g = ctx.createLinearGradient(0, 0, 0, capH);
-    g.addColorStop(0, planet.ice); g.addColorStop(1, "rgba(255,255,255,0)");
-    ctx.fillStyle = g; ctx.fillRect(0, 0, TEX_W, capH);
-    g = ctx.createLinearGradient(0, TEX_H - capH, 0, TEX_H);
-    g.addColorStop(0, "rgba(255,255,255,0)"); g.addColorStop(1, planet.ice);
-    ctx.fillStyle = g; ctx.fillRect(0, TEX_H - capH, TEX_W, capH);
+    /* Opaque polar caps. Every longitude collapses to a point at the pole, so
+       any detail up there smears into concentric rings. Flat colour cannot. */
+    const solid = TEX_H * 0.10;   // |lat| > 72
+    const blend = TEX_H * 0.07;
+    ctx.fillStyle = planet.iceSolid;
+    ctx.fillRect(0, 0, TEX_W, solid);
+    ctx.fillRect(0, TEX_H - solid, TEX_W, solid);
+    let g = ctx.createLinearGradient(0, solid, 0, solid + blend);
+    g.addColorStop(0, planet.iceSolid); g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = g; ctx.fillRect(0, solid, TEX_W, blend);
+    g = ctx.createLinearGradient(0, TEX_H - solid, 0, TEX_H - solid - blend);
+    g.addColorStop(0, planet.iceSolid); g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = g; ctx.fillRect(0, TEX_H - solid - blend, TEX_W, blend);
 
     const tex = new THREE.CanvasTexture(big);
     if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
@@ -396,17 +428,15 @@ export default function Atlas({ progress, setProgress }) {
       t.rot.x = Math.max(-1.1, Math.min(1.1, t.rot.x + dy * 0.006));
       return;
     }
-    if (e.touches || rafPending.current) return;
-    rafPending.current = true;
-    const cx = p.clientX, cy = p.clientY;
-    requestAnimationFrame(() => {
-      rafPending.current = false;
-      const ll = latLonAt(cx, cy);
-      if (!ll) { setHover(null); return; }
-      const t = pickAt(ll.lat, ll.lon);
-      setHover(t ? t.id : null);
-      setTip({ x: cx, y: cy });
-    });
+    if (e.touches) return;
+    const now = performance.now();
+    setTip({ x: p.clientX, y: p.clientY });
+    if (now - lastHover.current < 45) return;
+    lastHover.current = now;
+    const ll = latLonAt(p.clientX, p.clientY);
+    if (!ll) { setHover(null); return; }
+    const t = pickAt(ll.lat, ll.lon);
+    setHover(t ? t.id : null);
   };
   const onUp = (e) => {
     const wasDrag = drag.current.moved > 6;
@@ -422,10 +452,9 @@ export default function Atlas({ progress, setProgress }) {
   const flyTo = (id) => {
     const t = byId[id]; if (!t) return;
     setSel(id); setSpin(false);
-    const r = three.current.rot;
-    if (!r) return;
-    r.y = -toRad(t.lon) - Math.PI / 2;
-    r.x = toRad(t.lat) * 0.85;
+    const tc = three.current;
+    if (!tc.rot) return;
+    tc.target = { y: -toRad(t.lon) - Math.PI / 2, x: toRad(t.lat) * 0.85 };
   };
 
   const selT = sel ? byId[sel] : null;
@@ -460,10 +489,14 @@ export default function Atlas({ progress, setProgress }) {
       <div className="atlas-grid">
         <div style={{ background: "#04060A", border: `1px solid ${C.rule}`, borderRadius: 10, position: "relative", overflow: "hidden" }}>
           <div ref={mount}
-            onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}
+            onMouseDown={onDown} onMouseMove={onMove} onPointerMove={onMove} onMouseUp={onUp}
             onMouseLeave={() => { drag.current.on = false; setHover(null); }}
             onTouchStart={onDown} onTouchMove={onMove} onTouchEnd={onUp}
-            style={{ width: "100%", aspectRatio: "1", cursor: hovT ? "pointer" : "grab", touchAction: "none" }} />
+            style={{
+              width: "100%", aspectRatio: "1", touchAction: "none",
+              cursor: hovT ? "pointer" : "grab",
+              opacity: ready ? 1 : 0, transition: "opacity .7s ease",
+            }} />
 
           {hovT && (
             <div className="fade-in" style={{
