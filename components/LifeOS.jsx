@@ -5,7 +5,7 @@ import Atlas from "./Atlas";
 import { SEED_PROGRESS } from "../lib/atlas";
 import {
   Flame, Dumbbell, BookOpen, Play, Square, Plus, Minus, Trophy, ChevronLeft,
-  ChevronRight, Check, X, Timer, BarChart3, FileText, Activity, AlertTriangle, Download, Globe
+  ChevronRight, Check, X, Timer, BarChart3, FileText, Activity, AlertTriangle, Download, Globe, ClipboardList
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, Tooltip,
@@ -1227,6 +1227,258 @@ function Dashboard({ state, meta, viewDate }) {
   );
 }
 
+/* ============================== PRACTICE ============================== */
+const MARKING = [
+  { id: "unmarked", label: "Not marked", colour: "#7C8698", weight: 0 },
+  { id: "self", label: "Self-marked", colour: "#F2B441", weight: 0.5 },
+  { id: "solutions", label: "Against solutions", colour: "#5B8DEF", weight: 0.8 },
+  { id: "teacher", label: "Teacher marked", colour: "#4FB477", weight: 1 },
+];
+const SOURCES = ["VCAA", "Heffernan", "Fundamental", "NEAP", "Checkpoints", "TSSM",
+                 "Insight", "MAV", "School worksheet", "Textbook", "Other"];
+
+const SEED_PRACTICE = [
+  { id: "p1", sub: "sd",  source: "VCAA", paper: "2018 exam", date: null, mark: null, total: null, minutes: null, allowed: 120, marking: "self", note: "" },
+  { id: "p2", sub: "sd",  source: "VCAA", paper: "2019 exam", date: null, mark: null, total: null, minutes: null, allowed: 120, marking: "self", note: "" },
+  { id: "p3", sub: "mm",  source: "VCAA", paper: "2025 Exam 1", date: null, mark: null, total: 40, minutes: null, allowed: 60, marking: "solutions", note: "" },
+  { id: "p4", sub: "mm",  source: "VCAA", paper: "2024 Exam 1", date: null, mark: null, total: 40, minutes: null, allowed: 60, marking: "solutions", note: "" },
+  { id: "p5", sub: "mm",  source: "Heffernan", paper: "Exam 1 (which one?)", date: null, mark: null, total: 40, minutes: null, allowed: 60, marking: "solutions", note: "" },
+  { id: "p6", sub: "mm",  source: "Fundamental", paper: "Exam 1 (which one?)", date: null, mark: null, total: 40, minutes: null, allowed: 60, marking: "solutions", note: "" },
+  { id: "p7", sub: "mm",  source: "School worksheet", paper: "Worksheets — batch", date: null, mark: null, total: null, minutes: null, allowed: null, marking: "self", note: "" },
+];
+
+function Practice({ state, setState }) {
+  const [filter, setFilter] = useState("all");
+  const [open, setOpen] = useState(null);
+
+  const subs = state.vce?.subjects?.filter((s) => !s.completed) || [];
+  const nameOf = (id) => subs.find((s) => s.id === id)?.name || id;
+  const rows = state.practice || [];
+
+  const save = (next) => setState({ ...state, practice: next });
+  const patch = (id, field, v) =>
+    save(rows.map((r) => r.id !== id ? r : {
+      ...r, [field]: (field === "mark" || field === "total" || field === "minutes" || field === "allowed")
+        ? (v === "" ? null : Number(v)) : v,
+    }));
+  const addRow = () => {
+    const id = "p" + Date.now();
+    save([...rows, {
+      id, sub: subs[0]?.id || "mm", source: "VCAA", paper: "New paper",
+      date: key(new Date()), mark: null, total: null, minutes: null, allowed: null,
+      marking: "unmarked", note: "",
+    }]);
+    setOpen(id);
+  };
+  const remove = (id) => { save(rows.filter((r) => r.id !== id)); setOpen(null); };
+
+  const shown = filter === "all" ? rows : rows.filter((r) => r.sub === filter);
+  const sorted = [...shown].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+
+  /* ---- per-subject analysis ---- */
+  const analysis = useMemo(() => {
+    const out = {};
+    for (const s of subs) {
+      const mine = rows.filter((r) => r.sub === s.id);
+      const scored = mine.filter((r) => r.mark !== null && r.total);
+      if (!mine.length) continue;
+      const pcts = scored.map((r) => ({ p: r.mark / r.total, d: r.date || "" }))
+        .sort((a, b) => a.d.localeCompare(b.d));
+      const avg = pcts.length ? pcts.reduce((a, x) => a + x.p, 0) / pcts.length : null;
+      const recent = pcts.slice(-3), older = pcts.slice(-6, -3);
+      const trend = (recent.length && older.length)
+        ? (recent.reduce((a, x) => a + x.p, 0) / recent.length) - (older.reduce((a, x) => a + x.p, 0) / older.length)
+        : null;
+      const timed = mine.filter((r) => r.minutes && r.allowed);
+      const timeRatio = timed.length
+        ? timed.reduce((a, r) => a + r.minutes / r.allowed, 0) / timed.length : null;
+      const conf = mine.length
+        ? mine.reduce((a, r) => a + (MARKING.find((m) => m.id === r.marking)?.weight || 0), 0) / mine.length : 0;
+      out[s.id] = {
+        name: s.name, count: mine.length, scored: scored.length, avg, trend, timeRatio, conf,
+        best: pcts.length ? Math.max(...pcts.map((x) => x.p)) : null,
+        latest: pcts.length ? pcts[pcts.length - 1].p : null,
+        bySource: Object.entries(mine.reduce((a, r) => { a[r.source] = (a[r.source] || 0) + 1; return a; }, {}))
+          .sort((a, b) => b[1] - a[1]),
+      };
+    }
+    return out;
+  }, [rows, subs]);
+
+  const small = { ...inputStyle, padding: "6px 8px", fontSize: 12.5 };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* analysis */}
+      <div className="los-cols">
+        {Object.entries(analysis).map(([id, a]) => (
+          <Card key={id} style={{ padding: 13 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 9 }}>
+              <span style={{ fontSize: 14.5, fontWeight: 600 }}>{a.name}</span>
+              <span style={{ fontFamily: MONO, fontSize: 22, color: a.avg === null ? C.dim : a.avg >= .8 ? C.moss : a.avg >= .6 ? C.amber : C.signal }}>
+                {a.avg === null ? "—" : Math.round(a.avg * 100) + "%"}
+              </span>
+            </div>
+            <div style={{ fontSize: 12, lineHeight: 1.9, color: C.dim }}>
+              <div><span style={{ fontFamily: MONO, color: C.bone }}>{a.count}</span> papers · <span style={{ fontFamily: MONO, color: C.bone }}>{a.scored}</span> with marks</div>
+              {a.latest !== null && (
+                <div>Latest <span style={{ fontFamily: MONO, color: C.bone }}>{Math.round(a.latest * 100)}%</span>
+                  {a.best !== null && <> · best <span style={{ fontFamily: MONO, color: C.bone }}>{Math.round(a.best * 100)}%</span></>}
+                </div>
+              )}
+              {a.trend !== null && (
+                <div style={{ color: a.trend >= 0 ? C.moss : C.signal }}>
+                  {a.trend >= 0 ? "▲" : "▼"} {Math.abs(a.trend * 100).toFixed(0)}% <span style={{ color: C.dim }}>last 3 vs previous 3</span>
+                </div>
+              )}
+              {a.timeRatio !== null && (
+                <div>Using <span style={{ fontFamily: MONO, color: a.timeRatio > 1 ? C.signal : C.bone }}>{Math.round(a.timeRatio * 100)}%</span> of exam time</div>
+              )}
+            </div>
+            <div style={{ marginTop: 9, paddingTop: 9, borderTop: `1px solid ${C.rule}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontFamily: MONO, fontSize: 9.5, color: C.dim, letterSpacing: 1, marginBottom: 5 }}>
+                <span>MARKING CONFIDENCE</span><span>{Math.round(a.conf * 100)}%</span>
+              </div>
+              <div style={{ height: 4, background: C.rule, borderRadius: 2 }}>
+                <div style={{ height: "100%", width: `${a.conf * 100}%`, borderRadius: 2, transition: "width .4s", background: a.conf >= .8 ? C.moss : a.conf >= .5 ? C.amber : C.signal }} />
+              </div>
+              <div style={{ fontSize: 11, color: C.dim, marginTop: 6, lineHeight: 1.45 }}>
+                {a.conf >= .8 ? "Marks are trustworthy."
+                  : a.conf >= .5 ? "Partly self-marked — the average is probably optimistic."
+                  : "Mostly unmarked or self-marked. Treat that percentage as rough."}
+              </div>
+              <div style={{ fontSize: 11, color: C.dim, marginTop: 6 }}>
+                {a.bySource.map(([s, n]) => `${s} ×${n}`).join(" · ")}
+              </div>
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      {/* filter + add */}
+      <Card style={{ padding: 12 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+          <Btn active={filter === "all"} onClick={() => setFilter("all")} style={{ padding: "6px 11px", fontSize: 12.5 }}>
+            All · {rows.length}
+          </Btn>
+          {subs.map((s) => {
+            const n = rows.filter((r) => r.sub === s.id).length;
+            return (
+              <Btn key={s.id} active={filter === s.id} onClick={() => setFilter(s.id)} style={{ padding: "6px 11px", fontSize: 12.5 }}>
+                {s.name} · {n}
+              </Btn>
+            );
+          })}
+          <span style={{ flex: 1 }} />
+          <Btn onClick={addRow} active style={{ padding: "6px 12px", fontSize: 12.5 }}>
+            <Plus size={12} /> Log a paper
+          </Btn>
+        </div>
+      </Card>
+
+      {/* rows */}
+      {sorted.length === 0 && (
+        <Card><div style={{ fontSize: 13, color: C.dim }}>Nothing logged for that filter yet.</div></Card>
+      )}
+      {sorted.map((r) => {
+        const isOpen = open === r.id;
+        const pct = r.mark !== null && r.total ? r.mark / r.total : null;
+        const mk = MARKING.find((m) => m.id === r.marking) || MARKING[0];
+        return (
+          <Card key={r.id} style={{ padding: 0, overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 13px" }}>
+              <button onClick={() => setOpen(isOpen ? null : r.id)} style={{
+                flex: 1, background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0, minWidth: 0,
+              }}>
+                <div style={{ fontSize: 14, color: C.bone, fontWeight: 500 }}>
+                  {r.source} — {r.paper}
+                </div>
+                <div style={{ fontFamily: MONO, fontSize: 10.5, color: C.dim, marginTop: 3 }}>
+                  {nameOf(r.sub).toUpperCase()}
+                  {r.date && ` · ${parseKey(r.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" })}`}
+                  {r.minutes && ` · ${fmtHM(r.minutes)}`}
+                  {r.allowed && r.minutes && ` of ${fmtHM(r.allowed)}`}
+                </div>
+              </button>
+              <span style={{ fontFamily: MONO, fontSize: 9.5, color: mk.colour, border: `1px solid ${C.rule}`, borderRadius: 4, padding: "3px 7px", flexShrink: 0 }}>
+                {mk.label}
+              </span>
+              <span style={{ fontFamily: MONO, fontSize: 19, flexShrink: 0, minWidth: 46, textAlign: "right",
+                color: pct === null ? C.dim : pct >= .8 ? C.moss : pct >= .6 ? C.amber : C.signal }}>
+                {pct === null ? "—" : Math.round(pct * 100)}
+              </span>
+            </div>
+
+            {isOpen && (
+              <div style={{ padding: "0 13px 13px", display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                  <select value={r.sub} onChange={(e) => patch(r.id, "sub", e.target.value)}
+                    style={{ ...small, fontFamily: SANS, flex: "1 1 130px" }}>
+                    {subs.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                  <input list="src-list" value={r.source} onChange={(e) => patch(r.id, "source", e.target.value)}
+                    placeholder="Source" style={{ ...small, fontFamily: SANS, flex: "1 1 120px" }} />
+                  <datalist id="src-list">{SOURCES.map((s) => <option key={s} value={s} />)}</datalist>
+                </div>
+                <input value={r.paper} onChange={(e) => patch(r.id, "paper", e.target.value)}
+                  placeholder="Which paper? e.g. 2024 Exam 1" style={{ ...small, fontFamily: SANS, width: "100%", boxSizing: "border-box" }} />
+
+                <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
+                  <input type="date" value={r.date || ""} onChange={(e) => patch(r.id, "date", e.target.value)}
+                    style={{ ...small, flex: "0 0 138px" }} />
+                  <input value={r.mark ?? ""} onChange={(e) => patch(r.id, "mark", e.target.value)}
+                    placeholder="mark" inputMode="decimal" style={{ ...small, flex: "0 0 62px", textAlign: "center" }} />
+                  <span style={{ color: C.dim, fontFamily: MONO }}>/</span>
+                  <input value={r.total ?? ""} onChange={(e) => patch(r.id, "total", e.target.value)}
+                    placeholder="out of" inputMode="decimal" style={{ ...small, flex: "0 0 62px", textAlign: "center" }} />
+                  <span style={{ fontFamily: MONO, fontSize: 12.5, color: pct !== null && pct > 1 ? C.signal : C.dim, flex: "0 0 44px", textAlign: "right" }}>
+                    {pct !== null ? Math.round(pct * 100) + "%" : ""}
+                  </span>
+                </div>
+
+                <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
+                  <span style={{ fontSize: 11.5, color: C.dim }}>Took</span>
+                  <input value={r.minutes ?? ""} onChange={(e) => patch(r.id, "minutes", e.target.value)}
+                    placeholder="mins" inputMode="numeric" style={{ ...small, flex: "0 0 66px", textAlign: "center" }} />
+                  <span style={{ fontSize: 11.5, color: C.dim }}>of an allowed</span>
+                  <input value={r.allowed ?? ""} onChange={(e) => patch(r.id, "allowed", e.target.value)}
+                    placeholder="mins" inputMode="numeric" style={{ ...small, flex: "0 0 66px", textAlign: "center" }} />
+                </div>
+
+                <div>
+                  <div style={{ fontFamily: MONO, fontSize: 9.5, color: C.dim, letterSpacing: 1, marginBottom: 6 }}>HOW WAS IT MARKED?</div>
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                    {MARKING.map((m) => (
+                      <button key={m.id} onClick={() => patch(r.id, "marking", m.id)} style={{
+                        padding: "6px 10px", fontSize: 11.5, borderRadius: 6, cursor: "pointer", fontFamily: SANS,
+                        background: r.marking === m.id ? m.colour : C.plate2,
+                        color: r.marking === m.id ? C.ink : C.dim,
+                        border: `1px solid ${r.marking === m.id ? m.colour : C.rule}`,
+                        fontWeight: r.marking === m.id ? 600 : 400, transition: "all .14s",
+                      }}>{m.label}</button>
+                    ))}
+                  </div>
+                </div>
+
+                <textarea value={r.note} onChange={(e) => patch(r.id, "note", e.target.value)}
+                  rows={3} placeholder="What actually happened? Which questions cost you, what you'd do differently, anything you only half-marked."
+                  style={{ width: "100%", background: C.plate2, color: C.bone, border: `1px solid ${C.rule}`,
+                    borderRadius: 7, padding: 9, fontSize: 13, fontFamily: SANS, lineHeight: 1.5,
+                    resize: "vertical", boxSizing: "border-box" }} />
+
+                <div>
+                  <Btn onClick={() => remove(r.id)} style={{ padding: "5px 10px", fontSize: 12, borderColor: C.signal, color: C.signal }}>
+                    <X size={11} /> Delete
+                  </Btn>
+                </div>
+              </div>
+            )}
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
 /* ============================== LOG ============================== */
 function Log({ state }) {
   const [q, setQ] = useState("");
@@ -1434,6 +1686,7 @@ export default function LifeOS({ user }) {
         const base = remote || SEED;
         if (!base.vce) base.vce = SEED_VCE;
         if (!base.atlas) base.atlas = SEED_PROGRESS;
+        if (!base.practice) base.practice = SEED_PRACTICE;
         setState(base);
         setStorageOk(true);
       } catch (e) {
@@ -1534,6 +1787,7 @@ export default function LifeOS({ user }) {
     { id: "today", label: "Today", icon: Timer },
     { id: "dash", label: "Dashboard", icon: BarChart3 },
     { id: "vce", label: "VCE", icon: BookOpen },
+    { id: "practice", label: "Practice", icon: ClipboardList },
     { id: "log", label: "Log", icon: FileText },
     { id: "gym", label: "Gym", icon: Dumbbell },
     { id: "atlas", label: "Atlas", icon: Globe },
@@ -1592,6 +1846,7 @@ export default function LifeOS({ user }) {
         {tab === "today" && <Today day={day} setDay={setDay} streak={streak} upcoming={upcoming} state={state} onApply={applyActions} />}
         {tab === "dash" && <Dashboard state={state} meta={meta} viewDate={viewDate} />}
         {tab === "vce" && <VCE state={state} setState={setState} />}
+        {tab === "practice" && <Practice state={state} setState={setState} />}
         {tab === "log" && <Log state={state} />}
         {tab === "gym" && <Gym state={state} setState={setState} todayKey={vk} />}
         {tab === "atlas" && <Atlas progress={state.atlas || SEED_PROGRESS} setProgress={(p) => setState({ ...state, atlas: p })} />}
