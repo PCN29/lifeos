@@ -5,7 +5,7 @@ import Atlas from "./Atlas";
 import { SEED_PROGRESS } from "../lib/atlas";
 import {
   Flame, Dumbbell, BookOpen, Play, Square, Plus, Minus, Trophy, ChevronLeft,
-  ChevronRight, Check, X, Timer, BarChart3, FileText, Activity, AlertTriangle, Download, Globe, ClipboardList
+  ChevronRight, Check, X, Timer, BarChart3, FileText, Activity, AlertTriangle, Download, Globe, ClipboardList, ListChecks
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, Tooltip,
@@ -1479,6 +1479,260 @@ function Practice({ state, setState }) {
     </div>
   );
 }
+/* ============================== PAPER LIBRARY ============================== */
+/* Study-design accreditation, checked against VCAA:
+     Maths Methods      2023-2027  -> VCAA 2023+ current
+     Physics            U3&4 from 2024 -> VCAA 2024+ current
+     English            U3&4 from 2024 -> VCAA 2024+ current
+     Indonesian SL      2023-2027  -> VCAA 2023+ current
+     Software Dev       U3&4 from 2025 -> VCAA 2025 only
+   Everything below is editable — verify against vcaa.vic.edu.au before relying on it. */
+
+const P = (sub, provider, name, year, current) =>
+  ({ id: `${sub}-${provider}-${name}`.replace(/\s+/g, "_").toLowerCase(), sub, provider, name, year, current, done: false });
+
+const SEED_PAPERS = [
+  // ---- Maths Methods : VCAA current from 2023
+  ...[2025, 2024, 2023].flatMap((y) => [P("mm","VCAA",`${y} Exam 1`,y,true), P("mm","VCAA",`${y} Exam 2`,y,true)]),
+  ...[2022, 2021, 2020, 2019].flatMap((y) => [P("mm","VCAA",`${y} Exam 1`,y,false), P("mm","VCAA",`${y} Exam 2`,y,false)]),
+  P("mm","Heffernan","Exam 1 — Trial A",null,true), P("mm","Heffernan","Exam 2 — Trial A",null,true),
+  P("mm","Heffernan","Exam 1 — Trial B",null,true), P("mm","Heffernan","Exam 2 — Trial B",null,true),
+  P("mm","Fundamental","Exam 1 — Trial",null,true), P("mm","Fundamental","Exam 2 — Trial",null,true),
+  P("mm","NEAP","Trial Exam 1",null,true), P("mm","NEAP","Trial Exam 2",null,true),
+  P("mm","MAV","Trial Exam 1",null,true), P("mm","MAV","Trial Exam 2",null,true),
+  P("mm","Checkpoints","Topic sets",null,true),
+
+  // ---- Physics : VCAA current from 2024
+  ...[2025, 2024].map((y) => P("phy","VCAA",`${y} exam`,y,true)),
+  ...[2023, 2022, 2021, 2019].map((y) => P("phy","VCAA",`${y} exam`,y,false)),
+  P("phy","Heffernan","Trial exam",null,true),
+  P("phy","NEAP","Trial exam",null,true),
+  P("phy","Checkpoints","Topic sets",null,true),
+  P("phy","STAV","Trial exam",null,true),
+
+  // ---- English : VCAA current from 2024
+  ...[2025, 2024].map((y) => P("eng","VCAA",`${y} exam`,y,true)),
+  ...[2023, 2022, 2021].map((y) => P("eng","VCAA",`${y} exam`,y,false)),
+  P("eng","Insight","Trial exam",null,true),
+  P("eng","NEAP","Trial exam",null,true),
+  P("eng","School","Practice exam",null,true),
+
+  // ---- Software Development : new study design, U3&4 from 2025
+  P("sd","VCAA","2025 exam",2025,true),
+  ...[2024, 2023, 2022, 2021, 2020, 2019, 2018].map((y) => P("sd","VCAA",`${y} exam (old design)`,y,false)),
+  P("sd","NEAP","Trial exam",null,true),
+  P("sd","TSSM","Trial exam",null,true),
+
+  // ---- Indonesian Second Language : current from 2023
+  ...[2025, 2024, 2023].map((y) => P("indo","VCAA",`${y} written exam`,y,true)),
+  ...[2022, 2021, 2019].map((y) => P("indo","VCAA",`${y} written exam`,y,false)),
+  P("indo","VCAA","Oral exam — sample topics",null,true),
+  P("indo","VSL","Practice written",null,true),
+  P("indo","VSL","Practice oral",null,true),
+];
+
+const T = (sub, name) => ({ id: `${sub}-${name}`.replace(/\s+/g,"_").toLowerCase(), sub, name, conf: 0 });
+const SEED_TOPICS = [
+  ...["Functions, relations & graphs","Algebra, number & structure","Calculus — differentiation",
+      "Calculus — integration & applications","Discrete random variables","Continuous random variables",
+      "Sampling & confidence intervals","Transformations","Exam 1 skills — by hand"].map((n) => T("mm", n)),
+  ...["Newtonian motion","Special relativity","Gravitational fields","Electric & magnetic fields",
+      "Electromagnetic induction","Wave properties","Light: wave vs particle","Matter as particles & waves",
+      "Practical investigation & data analysis"].map((n) => T("phy", n)),
+  ...["Text response — Memory Police","Text response — Sunset Boulevard","Crafting/creating texts",
+      "Argument & persuasive language analysis","Vocabulary & expression"].map((n) => T("eng", n)),
+  ...["Programming & data structures","Problem-solving methodology","Data & information",
+      "Networks","Security & risk management","Legal obligations (Privacy Act)",
+      "Project management & Gantt","Testing & evaluation criteria"].map((n) => T("sd", n)),
+  ...["Interpersonal — spoken exchange","Interpretive — reading & listening","Presentational — writing",
+      "Text types & register","Grammar & vocabulary range","Culture & prescribed sub-topics"].map((n) => T("indo", n)),
+];
+
+const CONF = ["Untouched", "Shaky", "Okay", "Solid"];
+const CONF_COL = ["#252B36", "#C46830", "#F2B441", "#38D97E"];
+
+function Papers({ state, setState }) {
+  const [filter, setFilter] = useState("all");
+  const [hideOld, setHideOld] = useState(true);
+
+  const subs = state.vce?.subjects?.filter((s) => !s.completed) || [];
+  const papers = state.papers || [];
+  const topics = state.topics || [];
+  const nameOf = (id) => subs.find((s) => s.id === id)?.name || id;
+
+  const setPapers = (n) => setState({ ...state, papers: n });
+  const toggle = (id) => setPapers(papers.map((p) => p.id === id ? { ...p, done: !p.done } : p));
+  const rename = (id, v) => setPapers(papers.map((p) => p.id === id ? { ...p, name: v } : p));
+  const removeP = (id) => setPapers(papers.filter((p) => p.id !== id));
+  const addP = (sub) => setPapers([...papers, {
+    id: "pp" + Date.now(), sub, provider: "Other", name: "New paper", year: null, current: true, done: false,
+  }]);
+
+  const setConf = (id, v) => setState({ ...state, topics: topics.map((t) => t.id === id ? { ...t, conf: v } : t) });
+
+  /* send a ticked paper straight into the practice log */
+  const logIt = (p) => {
+    const row = {
+      id: "p" + Date.now(), sub: p.sub, source: p.provider, paper: p.name,
+      date: key(new Date()), mark: null, total: null, minutes: null, allowed: null,
+      marking: "unmarked", note: "",
+    };
+    setState({
+      ...state,
+      practice: [...(state.practice || []), row],
+      papers: papers.map((x) => x.id === p.id ? { ...x, done: true } : x),
+    });
+  };
+
+  const visibleSubs = filter === "all" ? subs : subs.filter((s) => s.id === filter);
+
+  const statsFor = (subId) => {
+    const all = papers.filter((p) => p.sub === subId);
+    const cur = all.filter((p) => p.current);
+    return {
+      curDone: cur.filter((p) => p.done).length, curTotal: cur.length,
+      allDone: all.filter((p) => p.done).length, allTotal: all.length,
+    };
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <Card style={{ padding: 12 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+          <Btn active={filter === "all"} onClick={() => setFilter("all")} style={{ padding: "6px 11px", fontSize: 12.5 }}>All</Btn>
+          {subs.map((s) => {
+            const st = statsFor(s.id);
+            return (
+              <Btn key={s.id} active={filter === s.id} onClick={() => setFilter(s.id)} style={{ padding: "6px 11px", fontSize: 12.5 }}>
+                {s.name} <strong style={{ fontFamily: MONO }}>{st.curDone}/{st.curTotal}</strong>
+              </Btn>
+            );
+          })}
+          <span style={{ flex: 1 }} />
+          <Btn active={hideOld} onClick={() => setHideOld(!hideOld)} style={{ padding: "6px 11px", fontSize: 12.5 }}>
+            {hideOld ? "Current design only" : "Showing all years"}
+          </Btn>
+        </div>
+      </Card>
+
+      {visibleSubs.map((s) => {
+        const st = statsFor(s.id);
+        const mine = papers.filter((p) => p.sub === s.id && (!hideOld || p.current));
+        const byProv = mine.reduce((a, p) => { (a[p.provider] = a[p.provider] || []).push(p); return a; }, {});
+        const myTopics = topics.filter((t) => t.sub === s.id);
+        const covered = myTopics.filter((t) => t.conf >= 2).length;
+        const pct = st.curTotal ? st.curDone / st.curTotal : 0;
+
+        return (
+          <Card key={s.id}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+              <span style={{ fontSize: 16, fontWeight: 700 }}>{s.name}</span>
+              <span style={{ fontFamily: MONO, fontSize: 12, color: C.dim }}>
+                <strong style={{ color: pct >= .7 ? C.moss : pct >= .35 ? C.amber : C.signal, fontSize: 15 }}>
+                  {st.curDone}/{st.curTotal}
+                </strong> current-design papers
+                {st.allTotal > st.curTotal && <> · {st.allDone}/{st.allTotal} including older</>}
+              </span>
+            </div>
+
+            <div style={{ height: 8, background: C.rule, borderRadius: 4, marginBottom: 14, display: "flex", overflow: "hidden" }}>
+              <div style={{ width: `${pct * 100}%`, background: pct >= .7 ? C.moss : pct >= .35 ? C.amber : C.signal, transition: "width .4s" }} />
+            </div>
+
+            {Object.entries(byProv).map(([prov, list]) => {
+              const d = list.filter((p) => p.done).length;
+              return (
+                <div key={prov} style={{ marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                    <span style={{ fontFamily: MONO, fontSize: 10, letterSpacing: 1.2, color: prov === "VCAA" ? C.bone : C.dim, fontWeight: prov === "VCAA" ? 700 : 400 }}>
+                      {prov.toUpperCase()}
+                    </span>
+                    <span style={{ fontFamily: MONO, fontSize: 10.5, color: d === list.length && d > 0 ? C.moss : C.dim }}>
+                      <strong>{d}</strong>/{list.length}
+                    </span>
+                  </div>
+                  {list.map((p) => (
+                    <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 0" }}>
+                      <button onClick={() => toggle(p.id)} style={{
+                        width: 19, height: 19, flexShrink: 0, borderRadius: 5, cursor: "pointer",
+                        background: p.done ? C.moss : C.plate2,
+                        border: `1px solid ${p.done ? C.moss : C.rule}`,
+                        display: "flex", alignItems: "center", justifyContent: "center", transition: "all .14s",
+                      }}>{p.done && <Check size={12} color={C.ink} strokeWidth={3} />}</button>
+                      <input value={p.name} onChange={(e) => rename(p.id, e.target.value)} style={{
+                        flex: 1, minWidth: 0, background: "none", border: "none", padding: 0,
+                        fontSize: 13, fontFamily: SANS, outline: "none",
+                        color: p.done ? C.bone : C.dim, fontWeight: p.done ? 600 : 400,
+                      }} />
+                      {!p.current && (
+                        <span style={{ fontFamily: MONO, fontSize: 9, color: C.amber, border: `1px solid ${C.rule}`, borderRadius: 4, padding: "2px 5px", flexShrink: 0 }}>
+                          OLD DESIGN
+                        </span>
+                      )}
+                      <button onClick={() => logIt(p)} title="Log it in Practice" style={{
+                        background: "none", border: `1px solid ${C.rule}`, borderRadius: 5, color: C.dim,
+                        cursor: "pointer", padding: "3px 7px", fontSize: 10.5, fontFamily: MONO, flexShrink: 0,
+                      }}>LOG</button>
+                      <button onClick={() => removeP(p.id)} style={{ background: "none", border: "none", color: C.rule, cursor: "pointer", padding: 2, flexShrink: 0 }}>
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+
+            <Btn onClick={() => addP(s.id)} style={{ padding: "5px 10px", fontSize: 12, marginBottom: 14 }}>
+              <Plus size={11} /> Add paper
+            </Btn>
+
+            {/* topic coverage */}
+            <div style={{ borderTop: `1px solid ${C.rule}`, paddingTop: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 9 }}>
+                <span style={{ fontFamily: MONO, fontSize: 10, letterSpacing: 1.2, color: C.dim }}>KEY KNOWLEDGE COVERAGE</span>
+                <span style={{ fontFamily: MONO, fontSize: 11.5, color: C.dim }}>
+                  <strong style={{ color: covered === myTopics.length ? C.moss : C.bone }}>{covered}</strong>/{myTopics.length} at okay or better
+                </span>
+              </div>
+              {myTopics.map((t) => (
+                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "4px 0" }}>
+                  <span style={{ flex: 1, fontSize: 12.5, color: t.conf >= 2 ? C.bone : C.dim, minWidth: 0 }}>{t.name}</span>
+                  <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+                    {CONF.map((c, i) => (
+                      <button key={i} onClick={() => setConf(t.id, i)} title={c} style={{
+                        width: 22, height: 15, borderRadius: 3, cursor: "pointer",
+                        background: t.conf >= i && i > 0 ? CONF_COL[t.conf] : C.plate2,
+                        border: `1px solid ${t.conf === i ? C.bone : C.rule}`, padding: 0, transition: "all .14s",
+                      }} />
+                    ))}
+                  </div>
+                  <span style={{ fontFamily: MONO, fontSize: 9.5, color: CONF_COL[t.conf], flexShrink: 0, width: 58, textAlign: "right" }}>
+                    {CONF[t.conf].toUpperCase()}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        );
+      })}
+
+      <Card style={{ borderColor: C.amber }}>
+        <Eyebrow>Before you trust this list</Eyebrow>
+        <div style={{ fontSize: 12.5, color: C.dim, lineHeight: 1.65 }}>
+          Study-design periods are checked against VCAA: <strong style={{ color: C.bone }}>Methods 2023–2027</strong>,
+          <strong style={{ color: C.bone }}> Physics and English Units 3&4 from 2024</strong>,
+          <strong style={{ color: C.bone }}> Indonesian 2023–2027</strong>, and
+          <strong style={{ color: C.bone }}> Software Development Units 3&4 from 2025</strong> — which is why only the
+          2025 Software paper is marked current.
+          <br /><br />
+          Older papers still build skills, they just won't match the current format. Commercial trial papers are listed
+          generically because availability changes each year — rename them to whatever you actually have.
+          Check the VCAA past exams page for the definitive list.
+        </div>
+      </Card>
+    </div>
+  );
+}
 /* ============================== LOG ============================== */
 function Log({ state }) {
   const [q, setQ] = useState("");
@@ -1687,6 +1941,8 @@ export default function LifeOS({ user }) {
         if (!base.vce) base.vce = SEED_VCE;
         if (!base.atlas) base.atlas = SEED_PROGRESS;
         if (!base.practice) base.practice = SEED_PRACTICE;
+        if (!base.papers) base.papers = SEED_PAPERS;
+        if (!base.topics) base.topics = SEED_TOPICS;
         setState(base);
         setStorageOk(true);
       } catch (e) {
@@ -1787,6 +2043,7 @@ export default function LifeOS({ user }) {
     { id: "today", label: "Today", icon: Timer },
     { id: "dash", label: "Dashboard", icon: BarChart3 },
     { id: "vce", label: "VCE", icon: BookOpen },
+    { id: "papers", label: "Papers", icon: ListChecks },
     { id: "practice", label: "Practice", icon: ClipboardList },
     { id: "log", label: "Log", icon: FileText },
     { id: "gym", label: "Gym", icon: Dumbbell },
@@ -1846,6 +2103,7 @@ export default function LifeOS({ user }) {
         {tab === "today" && <Today day={day} setDay={setDay} streak={streak} upcoming={upcoming} state={state} onApply={applyActions} />}
         {tab === "dash" && <Dashboard state={state} meta={meta} viewDate={viewDate} />}
         {tab === "vce" && <VCE state={state} setState={setState} />}
+        {tab === "papers" && <Papers state={state} setState={setState} />}
         {tab === "practice" && <Practice state={state} setState={setState} />}
         {tab === "log" && <Log state={state} />}
         {tab === "gym" && <Gym state={state} setState={setState} todayKey={vk} />}
