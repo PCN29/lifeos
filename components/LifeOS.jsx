@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { loadRemote, saveRemote } from "../lib/store";
 import Atlas from "./Atlas";
+import { MuscleMap, Goal, Fuel } from "./Body";
 import { SEED_PROGRESS } from "../lib/atlas";
 import {
   Flame, Dumbbell, BookOpen, Play, Square, Plus, Minus, Trophy, ChevronLeft,
@@ -2194,6 +2195,30 @@ function Gym({ state, setState, todayKey }) {
     </div>
   );
 }
+/* ============================== BODY ============================== */
+function BodyTab({ state, setState, todayKey }) {
+  const [view, setView] = useState("train");
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <Card style={{ padding: 12 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[["train", "Train"], ["fuel", "Fuel"], ["goal", "Goal"]].map(([id, l]) => (
+            <Btn key={id} active={view === id} onClick={() => setView(id)} style={{ padding: "6px 14px", fontSize: 12.5 }}>{l}</Btn>
+          ))}
+        </div>
+      </Card>
+      {view === "train" && (
+        <>
+          <MuscleMap lifts={state.lifts} />
+          <Gym state={state} setState={setState} todayKey={todayKey} />
+        </>
+      )}
+      {view === "fuel" && <Fuel state={state} setState={setState} todayKey={todayKey} />}
+      {view === "goal" && <Goal state={state} setState={setState} />}
+    </div>
+  );
+}
+
 /* ============================== BACKUP ============================== */
 function Backup({ state, setState, storageOk, saveStatus, exportData }) {
   const [paste, setPaste] = useState("");
@@ -2289,6 +2314,8 @@ export default function LifeOS({ user }) {
         if (!base.papers) base.papers = SEED_PAPERS;
         if (!base.lifts) base.lifts = SEED_LIFTS;
         if (!base.body) base.body = SEED_BODY;
+        if (!base.profile) base.profile = { height: 183, weight: 70, sex: "m", activity: 1.55, goal: "lean" };
+        if (!base.food) base.food = {};
         if (!base.topics) base.topics = SEED_TOPICS;
         setState(base);
         setStorageOk(true);
@@ -2392,7 +2419,7 @@ export default function LifeOS({ user }) {
     { id: "vce", label: "VCE", icon: BookOpen },
     { id: "papers", label: "Exams", icon: ListChecks },
     { id: "log", label: "Log", icon: FileText },
-    { id: "gym", label: "Gym", icon: Dumbbell },
+    { id: "gym", label: "Body", icon: Dumbbell },
     { id: "atlas", label: "Atlas", icon: Globe },
     { id: "backup", label: "Backup", icon: Download },
   ];
@@ -2451,7 +2478,7 @@ export default function LifeOS({ user }) {
         {tab === "vce" && <VCE state={state} setState={setState} />}
         {tab === "papers" && <PaperWork state={state} setState={setState} />}
         {tab === "log" && <Log state={state} />}
-        {tab === "gym" && <Gym state={state} setState={setState} todayKey={vk} />}
+        {tab === "gym" && <BodyTab state={state} setState={setState} todayKey={vk} />}
         {tab === "atlas" && <Atlas progress={state.atlas || SEED_PROGRESS} setProgress={(p) => setState({ ...state, atlas: p })} />}
         {tab === "backup" && <Backup state={state} setState={setState} storageOk={storageOk} saveStatus={saveStatus} exportData={exportData} />}
       </div>
