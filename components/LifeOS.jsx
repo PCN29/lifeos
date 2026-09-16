@@ -5,7 +5,7 @@ import Atlas from "./Atlas";
 import { SEED_PROGRESS } from "../lib/atlas";
 import {
   Flame, Dumbbell, BookOpen, Play, Square, Plus, Minus, Trophy, ChevronLeft,
-  ChevronRight, Check, X, Timer, BarChart3, FileText, Activity, AlertTriangle, Download, Globe, ClipboardList, ListChecks
+  ChevronRight, Check, X, Timer, BarChart3, FileText, Activity, AlertTriangle, Download, Globe, ListChecks
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, Tooltip,
@@ -1733,6 +1733,42 @@ function Papers({ state, setState }) {
     </div>
   );
 }
+/* ============================== PAPERS + PRACTICE ============================== */
+function PaperWork({ state, setState }) {
+  return (
+    <div>
+      <style>{`
+        .pp-grid { display:grid; gap:16px; grid-template-columns:1fr; align-items:start; }
+        @media (min-width:1150px){
+          .pp-grid { grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
+          .pp-col  { max-height: calc(100vh - 176px); overflow-y:auto; padding-right:8px; }
+          .pp-col::-webkit-scrollbar { width:7px; }
+          .pp-col::-webkit-scrollbar-thumb { background:#2A3140; border-radius:4px; }
+          .pp-col::-webkit-scrollbar-track { background:transparent; }
+        }
+        .pp-head { position:sticky; top:0; z-index:5; background:#10131A;
+                   padding:2px 0 9px; margin-bottom:2px; }
+      `}</style>
+      <div className="pp-grid">
+        <div className="pp-col">
+          <div className="pp-head">
+            <div style={{ fontFamily: MONO, fontSize: 10, letterSpacing: 1.6, color: C.signal }}>LIBRARY</div>
+            <div style={{ fontSize: 12.5, color: C.dim, marginTop: 2 }}>What exists, and what you've ticked off.</div>
+          </div>
+          <Papers state={state} setState={setState} />
+        </div>
+        <div className="pp-col">
+          <div className="pp-head">
+            <div style={{ fontFamily: MONO, fontSize: 10, letterSpacing: 1.6, color: C.steel }}>ATTEMPTS</div>
+            <div style={{ fontSize: 12.5, color: C.dim, marginTop: 2 }}>What you actually sat, scored and learned.</div>
+          </div>
+          <Practice state={state} setState={setState} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ============================== LOG ============================== */
 function Log({ state }) {
   const [q, setQ] = useState("");
@@ -2043,8 +2079,7 @@ export default function LifeOS({ user }) {
     { id: "today", label: "Today", icon: Timer },
     { id: "dash", label: "Dashboard", icon: BarChart3 },
     { id: "vce", label: "VCE", icon: BookOpen },
-    { id: "papers", label: "Papers", icon: ListChecks },
-    { id: "practice", label: "Practice", icon: ClipboardList },
+    { id: "papers", label: "Exams", icon: ListChecks },
     { id: "log", label: "Log", icon: FileText },
     { id: "gym", label: "Gym", icon: Dumbbell },
     { id: "atlas", label: "Atlas", icon: Globe },
@@ -2103,8 +2138,7 @@ export default function LifeOS({ user }) {
         {tab === "today" && <Today day={day} setDay={setDay} streak={streak} upcoming={upcoming} state={state} onApply={applyActions} />}
         {tab === "dash" && <Dashboard state={state} meta={meta} viewDate={viewDate} />}
         {tab === "vce" && <VCE state={state} setState={setState} />}
-        {tab === "papers" && <Papers state={state} setState={setState} />}
-        {tab === "practice" && <Practice state={state} setState={setState} />}
+        {tab === "papers" && <PaperWork state={state} setState={setState} />}
         {tab === "log" && <Log state={state} />}
         {tab === "gym" && <Gym state={state} setState={setState} todayKey={vk} />}
         {tab === "atlas" && <Atlas progress={state.atlas || SEED_PROGRESS} setProgress={(p) => setState({ ...state, atlas: p })} />}
