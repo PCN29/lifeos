@@ -1305,10 +1305,36 @@ function Practice({ state, setState }) {
     return out;
   }, [rows, subs]);
 
+  const weakest = useMemo(() => {
+    const st = topicStats(state);
+    return (state.topics || [])
+      .map((tp) => ({ ...tp, ...(st[tp.id] || { seen: 0, errors: 0 }) }))
+      .filter((tp) => tp.errors > 0)
+      .sort((a, b) => b.errors - a.errors)
+      .slice(0, 6);
+  }, [state]);
+
   const small = { ...inputStyle, padding: "6px 8px", fontSize: 12.5 };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {weakest.length > 0 && (
+        <Card style={{ borderColor: C.signal }}>
+          <Eyebrow>Where marks keep going</Eyebrow>
+          {weakest.map((tp) => (
+            <div key={tp.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "4px 0" }}>
+              <span style={{ fontSize: 12.5, color: C.bone, minWidth: 0 }}>{tp.name}</span>
+              <span style={{ fontFamily: MONO, fontSize: 11.5, color: C.signal, flexShrink: 0 }}>
+                <strong>{tp.errors}</strong>× across {tp.seen} papers
+              </span>
+            </div>
+          ))}
+          <div style={{ fontSize: 11.5, color: C.dim, marginTop: 8, lineHeight: 1.5 }}>
+            Built from your own marking, not from which papers you sat. This is the error log.
+          </div>
+        </Card>
+      )}
+
       {/* analysis */}
       <div className="los-cols">
         {Object.entries(analysis).map(([id, a]) => (
@@ -1398,6 +1424,7 @@ function Practice({ state, setState }) {
                   {r.date && ` · ${parseKey(r.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" })}`}
                   {r.minutes && ` · ${fmtHM(r.minutes)}`}
                   {r.allowed && r.minutes && ` of ${fmtHM(r.allowed)}`}
+                  {(r.wrong || []).length > 0 && <span style={{ color: C.signal }}> · {r.wrong.length} weak {r.wrong.length === 1 ? "topic" : "topics"}</span>}
                 </div>
               </button>
               <span style={{ fontFamily: MONO, fontSize: 9.5, color: mk.colour, border: `1px solid ${C.rule}`, borderRadius: 4, padding: "3px 7px", flexShrink: 0 }}>
@@ -1460,6 +1487,32 @@ function Practice({ state, setState }) {
                   </div>
                 </div>
 
+                <div>
+                  <div style={{ fontFamily: MONO, fontSize: 9.5, color: C.dim, letterSpacing: 1, marginBottom: 6 }}>
+                    WHICH TOPICS COST YOU MARKS?
+                  </div>
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                    {(state.topics || []).filter((tp) => tp.sub === r.sub).map((tp) => {
+                      const on = (r.wrong || []).includes(tp.id);
+                      return (
+                        <button key={tp.id} onClick={() => {
+                          const cur = r.wrong || [];
+                          patch(r.id, "wrong", on ? cur.filter((x) => x !== tp.id) : [...cur, tp.id]);
+                        }} style={{
+                          padding: "5px 9px", fontSize: 11.5, borderRadius: 6, cursor: "pointer", fontFamily: SANS,
+                          background: on ? "rgba(255,107,53,.16)" : C.plate2,
+                          color: on ? C.signal : C.dim,
+                          border: `1px solid ${on ? C.signal : C.rule}`,
+                          fontWeight: on ? 600 : 400, transition: "all .14s",
+                        }}>{tp.name}</button>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: 11, color: C.dim, marginTop: 6, lineHeight: 1.45 }}>
+                    This is what drives the coverage bars. Leave it blank if you haven't marked the paper yet.
+                  </div>
+                </div>
+
                 <textarea value={r.note} onChange={(e) => patch(r.id, "note", e.target.value)}
                   rows={3} placeholder="What actually happened? Which questions cost you, what you'd do differently, anything you only half-marked."
                   style={{ width: "100%", background: C.plate2, color: C.bone, border: `1px solid ${C.rule}`,
@@ -1479,6 +1532,39 @@ function Practice({ state, setState }) {
     </div>
   );
 }
+
+/* Exposure comes from ticked papers; the signal comes from where marks were lost.
+   A paper you sat is not a topic you hold. */
+function topicStats(state) {
+  const out = {};
+  const papers = state.papers || [];
+  const prac = state.practice || [];
+  const topics = state.topics || [];
+  for (const t of topics) out[t.id] = { seen: 0, errors: 0, attempts: 0 };
+  for (const p of papers) {
+    if (!p.done) continue;
+    const covers = p.covers || topics.filter((t) => t.sub === p.sub).map((t) => t.id);
+    for (const id of covers) if (out[id]) out[id].seen++;
+  }
+  for (const a of prac) {
+    const subTopics = topics.filter((t) => t.sub === a.sub).map((t) => t.id);
+    for (const id of subTopics) if (out[id]) out[id].attempts++;
+    for (const id of (a.wrong || [])) if (out[id]) out[id].errors++;
+  }
+  return out;
+}
+
+/* 0 Untouched · 1 Shaky · 2 Okay · 3 Solid */
+function autoConf(s) {
+  if (!s || s.seen === 0) return 0;
+  if (s.attempts === 0) return 1;              // seen but never marked against
+  const rate = s.errors / Math.max(1, s.attempts);
+  if (s.errors === 0 && s.seen >= 3) return 3;
+  if (rate <= 0.2) return 3;
+  if (rate <= 0.5) return 2;
+  return 1;
+}
+
 /* ============================== PAPER LIBRARY ============================== */
 /* Study-design accreditation, checked against VCAA:
      Maths Methods      2023-2027  -> VCAA 2023+ current
@@ -1568,7 +1654,12 @@ function Papers({ state, setState }) {
     id: "pp" + Date.now(), sub, provider: "Other", name: "New paper", year: null, current: true, done: false,
   }]);
 
-  const setConf = (id, v) => setState({ ...state, topics: topics.map((t) => t.id === id ? { ...t, conf: v } : t) });
+  const stats = useMemo(() => topicStats(state), [state.papers, state.practice, state.topics]);
+  const setConf = (id, v) => setState({
+    ...state,
+    topics: topics.map((t) => t.id === id ? { ...t, conf: v, manual: v !== null } : t),
+  });
+  const confOf = (t) => (t.manual && t.conf !== null && t.conf !== undefined) ? t.conf : autoConf(stats[t.id]);
 
   /* send a ticked paper straight into the practice log */
   const logIt = (p) => {
@@ -1620,7 +1711,7 @@ function Papers({ state, setState }) {
         const mine = papers.filter((p) => p.sub === s.id && (!hideOld || p.current));
         const byProv = mine.reduce((a, p) => { (a[p.provider] = a[p.provider] || []).push(p); return a; }, {});
         const myTopics = topics.filter((t) => t.sub === s.id);
-        const covered = myTopics.filter((t) => t.conf >= 2).length;
+        const covered = myTopics.filter((t) => confOf(t) >= 2).length;
         const pct = st.curTotal ? st.curDone / st.curTotal : 0;
 
         return (
@@ -1694,23 +1785,40 @@ function Papers({ state, setState }) {
                   <strong style={{ color: covered === myTopics.length ? C.moss : C.bone }}>{covered}</strong>/{myTopics.length} at okay or better
                 </span>
               </div>
-              {myTopics.map((t) => (
-                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "4px 0" }}>
-                  <span style={{ flex: 1, fontSize: 12.5, color: t.conf >= 2 ? C.bone : C.dim, minWidth: 0 }}>{t.name}</span>
-                  <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
-                    {CONF.map((c, i) => (
-                      <button key={i} onClick={() => setConf(t.id, i)} title={c} style={{
-                        width: 22, height: 15, borderRadius: 3, cursor: "pointer",
-                        background: t.conf >= i && i > 0 ? CONF_COL[t.conf] : C.plate2,
-                        border: `1px solid ${t.conf === i ? C.bone : C.rule}`, padding: 0, transition: "all .14s",
-                      }} />
-                    ))}
+              {myTopics.map((t) => {
+                const st = stats[t.id] || { seen: 0, errors: 0, attempts: 0 };
+                const c = confOf(t);
+                return (
+                  <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 0" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, color: c >= 2 ? C.bone : C.dim, fontWeight: c >= 3 ? 600 : 400 }}>{t.name}</div>
+                      <div style={{ fontFamily: MONO, fontSize: 9.5, color: C.dim, marginTop: 1 }}>
+                        seen <strong style={{ color: st.seen ? C.bone : C.rule }}>{st.seen}</strong>
+                        {st.errors > 0 && <> · cost marks <strong style={{ color: C.signal }}>{st.errors}</strong>×</>}
+                        {!t.manual && <span style={{ color: C.steel }}> · auto</span>}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+                      {CONF.map((lbl, i) => (
+                        <button key={i} onClick={() => setConf(t.id, i)} title={lbl} style={{
+                          width: 22, height: 15, borderRadius: 3, cursor: "pointer",
+                          background: c >= i && i > 0 ? CONF_COL[c] : C.plate2,
+                          border: `1px solid ${c === i ? C.bone : C.rule}`, padding: 0, transition: "all .14s",
+                        }} />
+                      ))}
+                    </div>
+                    <span style={{ fontFamily: MONO, fontSize: 9.5, color: CONF_COL[c], flexShrink: 0, width: 58, textAlign: "right" }}>
+                      {CONF[c].toUpperCase()}
+                    </span>
+                    {t.manual && (
+                      <button onClick={() => setState({ ...state, topics: topics.map((x) => x.id === t.id ? { ...x, manual: false } : x) })}
+                        title="Back to auto" style={{ background: "none", border: "none", color: C.rule, cursor: "pointer", padding: 0, flexShrink: 0 }}>
+                        <X size={11} />
+                      </button>
+                    )}
                   </div>
-                  <span style={{ fontFamily: MONO, fontSize: 9.5, color: CONF_COL[t.conf], flexShrink: 0, width: 58, textAlign: "right" }}>
-                    {CONF[t.conf].toUpperCase()}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </Card>
         );
