@@ -1916,83 +1916,284 @@ function Log({ state }) {
 }
 
 /* ============================== GYM ============================== */
+/* Notation carried over from the phone notes:
+     45 (3.75) + 3.75 inc   -> stack 45, add-on 3.75, step 3.75   => 48.75kg
+     30 (15,15) + 10 inc    -> 30 total, 15 a side, step 10
+     7, 8, 9, 10            -> dumbbell pyramid, one weight per set          */
+
+const GE = (date, w, add = 0, inc = null, side = null, note = "") =>
+  ({ id: date + "-" + w + "-" + Math.random().toString(36).slice(2, 6), date, w, add, inc, side, pyr: null, note });
+const GP = (date, pyr, note = "") =>
+  ({ id: date + "-p-" + Math.random().toString(36).slice(2, 6), date, w: null, add: 0, inc: null, side: null, pyr, note });
+
+const GL = (name, scheme, routine, entries) => ({ id: name.replace(/\s+/g, "_").toLowerCase(), name, scheme, routine, entries });
+
+const SEED_LIFTS = [
+  GL("Chest Press Machine", "4x15", "Main", [
+    GE("2025-09-01", 15, 0, 3.75), GE("2025-10-01", 22.5, 0, 3.75), GE("2025-11-01", 22.5, 3.75, 3.75),
+    GE("2026-02-01", 30, 0, 3.75), GE("2026-03-17", 37.5, 0, 3.75), GE("2026-03-24", 45, 0, 3.75),
+    GE("2026-08-15", 45, 3.75, 3.75), GE("2026-08-19", 52.5, 0, 3.75), GE("2026-09-04", 52.5, 3.75, 3.75),
+  ]),
+  GL("Chest Press Free Weight", "—", "Main", [
+    GE("2025-09-01", 10, 0, 5, 5), GE("2025-10-01", 20, 0, 10, 10), GE("2026-09-04", 30, 0, 10, 15),
+  ]),
+  GL("Pectoral Fly", "4x15", "Main", [ GE("2026-06-13", 45, 0, 3.75) ]),
+  GL("Dumbbell fly", "3x15", "Main", [ GP("2025-09-01", [4,5,6,7]), GP("2025-10-01", [5,6,7,8]) ]),
+  GL("Incline Dumbbell Press", "4x10", "Main", [ GP("2025-09-01", [7,8,9,10]), GP("2025-10-01", [8,9,10,12.5]) ]),
+  GL("Shoulder Press Machine", "—", "Main", [
+    GE("2025-09-01", 15, 0, 3.75), GE("2025-10-01", 22.5, 0, 3.75), GE("2025-11-01", 22.5, 0, 3.75),
+    GE("2026-09-04", 30, 3.75, 3.75), GE("2026-09-14", 30, 3.75, 3.75, null, "logged as 14/11 in notes — assumed Sept"),
+  ]),
+  GL("Shoulder Press (dumbbell)", "4x10", "Main", [
+    GP("2025-09-01", [7,8,9,10]), GP("2025-10-01", [8,9,10,12.5]), GP("2025-11-01", [8], "incomplete entry"),
+  ]),
+  GL("Lat pulldown", "4x15", "Main", [
+    GE("2025-09-01", 15, 0, 7.5), GE("2025-10-01", 20, 3.75, 7.5), GE("2026-08-22", 20, 0, 3.75),
+    GE("2026-09-04", 27.5, 0, 7.5, null, "machine max 60"),
+  ]),
+  GL("Lat row", "4x12", "Main", [ GE("2026-08-04", 27.5, 0, 7.5) ]),
+  GL("Iso lateral row", "—", "Main", [
+    GE("2026-02-01", 10, 0, 5), GE("2026-02-02", 20, 0, 20, 10, "then dropped to 10 (5,5)"),
+  ]),
+  GL("Tricep pulldown cable (bar)", "—", "Main", [
+    GE("2026-04-20", 12.5, 3.75, 2.5), GE("2026-09-04", 15, 0, 2.5), GE("2026-09-14", 17.5, 0, 3.75),
+  ]),
+  GL("Single Bar Bicep Curl", "4x15", "Main", [ GE("2025-11-01", 7.5, 0, 2.5) ]),
+  GL("Overhead bicep pulldown", "4x15", "Main", [
+    GE("2026-02-01", 10, 0, 5), GE("2026-03-01", 20, 0, 20, 10), GE("2026-09-11", 20, 0, 20, 10, "+10 on top"),
+  ]),
+  GL("Leg Press Stack", "4x15", "Main", [
+    GE("2025-12-01", 37.5, 3.75, 7.5), GE("2025-12-02", 45, 0, 7.5), GE("2025-12-03", 52.5, 3.75, 7.5),
+  ]),
+  GL("Seated Leg Extension", "—", "Main", [ GE("2026-02-01", 30, 3.75, 7.5), GE("2026-03-01", 45, 0, 7.5) ]),
+  GL("Seated Leg Curl", "—", "Main", [ GE("2026-02-01", 45, 0, 7.5) ]),
+  GL("Calf raises", "—", "Main", [ GE("2026-02-01", 10, 0, 10) ]),
+  GL("Chest Press", "—", "Bali", [ GE("2025-12-01", 39, 0, 9) ]),
+];
+
+const SEED_BODY = [
+  { id: "b1", date: "2025-09-01", height: 183, weight: 70 },
+  { id: "b2", date: "2025-10-01", height: 183, weight: 70 },
+];
+
+const totalOf = (e) => e.pyr ? Math.max(...e.pyr) : (e.w || 0) + (e.add || 0);
+const notationOf = (e) => {
+  if (e.pyr) return e.pyr.join(", ");
+  let s = `${e.w} (${e.add || 0})`;
+  if (e.side) s = `${e.w} (${e.side},${e.side})`;
+  if (e.inc) s += ` + ${e.inc} inc`;
+  return s;
+};
+
 function Gym({ state, setState, todayKey }) {
-  const w = state.workouts[todayKey] || null;
-  const [ex, setEx] = useState(EXERCISES[0]);
-  const [wt, setWt] = useState(""); const [reps, setReps] = useState("");
-  const history = useMemo(() => {
-    const h = {};
-    Object.entries(state.workouts).forEach(([dk, wo]) => (wo.exercises || []).forEach((e) => { (h[e.name] = h[e.name] || []).push(...e.sets.map((s) => ({ ...s, date: dk }))); }));
-    return h;
-  }, [state.workouts]);
-  const best = (n) => { const s = history[n] || []; return s.length ? s.reduce((a, x) => (e1rm(x.weight, x.reps) > e1rm(a.weight, a.reps) ? x : a)) : null; };
-  const addSet = () => {
-    const W = parseFloat(wt), R = parseInt(reps, 10);
-    if (!W || !R) return;
-    const prev = best(ex), isPR = !prev || e1rm(W, R) > e1rm(prev.weight, prev.reps);
-    const wo = state.workouts[todayKey] || { split: null, exercises: [] };
-    const list = [...wo.exercises], i = list.findIndex((e) => e.name === ex);
-    if (i >= 0) list[i] = { ...list[i], sets: [...list[i].sets, { weight: W, reps: R }] };
-    else list.push({ name: ex, sets: [{ weight: W, reps: R }] });
-    setState({
-      ...state, workouts: { ...state.workouts, [todayKey]: { ...wo, exercises: list } },
-      days: { ...state.days, [todayKey]: { ...(state.days[todayKey] || blank(todayKey)), gym: true } },
-      prs: isPR ? [...(state.prs || []), { name: ex, weight: W, reps: R, date: todayKey }] : state.prs,
-    });
-    setWt(""); setReps("");
+  const [openLift, setOpenLift] = useState(null);
+  const [routine, setRoutine] = useState("Main");
+
+  const lifts = state.lifts || [];
+  const body = state.body || [];
+  const routines = [...new Set(lifts.map((l) => l.routine))];
+
+  const setLifts = (n) => setState({ ...state, lifts: n });
+  const patchLift = (id, fn) => setLifts(lifts.map((l) => l.id === id ? fn({ ...l }) : l));
+
+  const addEntry = (lift) => {
+    const last = lift.entries[lift.entries.length - 1];
+    const seed = last
+      ? (last.pyr ? { ...last, id: "e" + Date.now(), date: todayKey, pyr: [...last.pyr] }
+                  : { ...last, id: "e" + Date.now(), date: todayKey, note: "" })
+      : { id: "e" + Date.now(), date: todayKey, w: 0, add: 0, inc: null, side: null, pyr: null, note: "" };
+    patchLift(lift.id, (l) => ({ ...l, entries: [...l.entries, seed] }));
+    setState((prev) => ({ ...prev, days: { ...prev.days, [todayKey]: { ...(prev.days[todayKey] || blank(todayKey)), gym: true } } }));
   };
-  const cur = best(ex);
+  const patchEntry = (liftId, entId, field, v) =>
+    patchLift(liftId, (l) => ({
+      ...l,
+      entries: l.entries.map((e) => e.id !== entId ? e : {
+        ...e,
+        [field]: field === "date" || field === "note" ? v
+               : field === "pyr" ? v.split(",").map((x) => parseFloat(x.trim())).filter((x) => !isNaN(x))
+               : (v === "" ? null : Number(v)),
+      }),
+    }));
+  const delEntry = (liftId, entId) =>
+    patchLift(liftId, (l) => ({ ...l, entries: l.entries.filter((e) => e.id !== entId) }));
+  const addLift = () => {
+    const id = "lift" + Date.now();
+    setLifts([...lifts, { id, name: "New exercise", scheme: "4x10", routine, entries: [] }]);
+    setOpenLift(id);
+  };
+
+  const shown = lifts.filter((l) => l.routine === routine);
+  const small = { ...inputStyle, padding: "5px 7px", fontSize: 12.5 };
+
+  /* body measurements */
+  const addBody = () => setState({
+    ...state,
+    body: [...body, { id: "b" + Date.now(), date: todayKey, height: body.at(-1)?.height || null, weight: null }],
+  });
+  const patchBody = (id, f, v) => setState({
+    ...state, body: body.map((b) => b.id === id ? { ...b, [f]: f === "date" ? v : (v === "" ? null : Number(v)) } : b),
+  });
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <Card>
-        <Eyebrow>Log a set</Eyebrow>
-        <select value={ex} onChange={(e) => setEx(e.target.value)} style={{ width: "100%", background: C.plate2, color: C.bone, border: `1px solid ${C.rule}`, borderRadius: 7, padding: "9px 10px", fontSize: 14, fontFamily: SANS, marginBottom: 10, boxSizing: "border-box" }}>
-          {EXERCISES.map((e) => <option key={e} value={e}>{e}</option>)}
-        </select>
-        {cur ? (
-          <div style={{ background: C.plate2, border: `1px solid ${C.rule}`, borderRadius: 7, padding: 10, marginBottom: 10, display: "flex", justifyContent: "space-between" }}>
-            <div>
-              <div style={{ fontFamily: MONO, fontSize: 10, color: C.dim, letterSpacing: 1 }}>BEST SO FAR</div>
-              <div style={{ fontFamily: MONO, fontSize: 18, color: C.bone }}>{cur.weight}kg × {cur.reps}</div>
-            </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontFamily: MONO, fontSize: 10, color: C.dim, letterSpacing: 1 }}>BEAT IT WITH</div>
-              <div style={{ fontFamily: MONO, fontSize: 18, color: C.signal }}>{cur.weight}kg × {cur.reps + 1}</div>
-            </div>
-          </div>
-        ) : <div style={{ fontSize: 13, color: C.dim, marginBottom: 10 }}>No history for this lift yet. Your first set sets the benchmark.</div>}
-        <div style={{ display: "flex", gap: 8 }}>
-          <input value={wt} onChange={(e) => setWt(e.target.value)} placeholder="kg" inputMode="decimal" style={inputStyle} />
-          <input value={reps} onChange={(e) => setReps(e.target.value)} placeholder="reps" inputMode="numeric" style={inputStyle} />
-          <Btn onClick={addSet} active style={{ padding: "9px 16px" }}><Plus size={14} /></Btn>
+      <Card style={{ padding: 12 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+          {routines.map((r) => (
+            <Btn key={r} active={routine === r} onClick={() => setRoutine(r)} style={{ padding: "6px 12px", fontSize: 12.5 }}>
+              {r} <strong style={{ fontFamily: MONO }}>{lifts.filter((l) => l.routine === r).length}</strong>
+            </Btn>
+          ))}
+          <span style={{ flex: 1 }} />
+          <Btn onClick={addLift} active style={{ padding: "6px 12px", fontSize: 12.5 }}>
+            <Plus size={12} /> Exercise
+          </Btn>
         </div>
       </Card>
+
+      {shown.map((l) => {
+        const ents = [...l.entries].sort((a, b) => a.date.localeCompare(b.date));
+        const last = ents[ents.length - 1];
+        const first = ents[0];
+        const best = ents.length ? Math.max(...ents.map(totalOf)) : 0;
+        const gain = ents.length > 1 ? totalOf(last) - totalOf(first) : 0;
+        const isOpen = openLift === l.id;
+        const nextUp = last && last.inc ? totalOf(last) + last.inc : null;
+        const chart = ents.map((e) => ({
+          k: e.date, label: parseKey(e.date).toLocaleDateString("en-AU", { month: "short", year: "2-digit" }),
+          kg: totalOf(e),
+        }));
+
+        return (
+          <Card key={l.id} style={{ padding: 0, overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 13px" }}>
+              <button onClick={() => setOpenLift(isOpen ? null : l.id)} style={{
+                flex: 1, background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0, minWidth: 0,
+              }}>
+                <div style={{ fontSize: 14.5, color: C.bone, fontWeight: 600 }}>
+                  {l.name} {l.scheme !== "—" && <span style={{ fontFamily: MONO, fontSize: 10.5, color: C.dim, fontWeight: 400 }}>{l.scheme}</span>}
+                </div>
+                <div style={{ fontFamily: MONO, fontSize: 10.5, color: C.dim, marginTop: 3 }}>
+                  {ents.length} entries
+                  {last && <> · last {parseKey(last.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" })}</>}
+                  {gain > 0 && <span style={{ color: C.moss }}> · +{gain}kg all time</span>}
+                </div>
+              </button>
+              <div style={{ textAlign: "right", flexShrink: 0 }}>
+                <div style={{ fontFamily: MONO, fontSize: 18, color: C.bone, lineHeight: 1.1 }}>
+                  {last ? (last.pyr ? last.pyr.join("/") : totalOf(last)) : "—"}
+                  {last && !last.pyr && <span style={{ fontSize: 11, color: C.dim }}>kg</span>}
+                </div>
+                {nextUp && <div style={{ fontFamily: MONO, fontSize: 9.5, color: C.signal }}>NEXT {nextUp}</div>}
+              </div>
+            </div>
+
+            {isOpen && (
+              <div style={{ padding: "0 13px 13px" }}>
+                <div style={{ display: "flex", gap: 7, marginBottom: 10, flexWrap: "wrap" }}>
+                  <input value={l.name} onChange={(e) => patchLift(l.id, (x) => ({ ...x, name: e.target.value }))}
+                    style={{ ...small, fontFamily: SANS, flex: "2 1 150px" }} />
+                  <input value={l.scheme} onChange={(e) => patchLift(l.id, (x) => ({ ...x, scheme: e.target.value }))}
+                    placeholder="4x10" style={{ ...small, fontFamily: MONO, flex: "0 0 70px", textAlign: "center" }} />
+                  <input value={l.routine} onChange={(e) => patchLift(l.id, (x) => ({ ...x, routine: e.target.value }))}
+                    style={{ ...small, fontFamily: SANS, flex: "0 0 90px" }} />
+                </div>
+
+                {ents.length > 1 && (
+                  <div style={{ height: 110, marginBottom: 12 }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={chart} margin={{ top: 4, right: 6, left: -28, bottom: 0 }}>
+                        <CartesianGrid stroke={C.rule} vertical={false} />
+                        <XAxis dataKey="label" tick={{ fill: C.dim, fontSize: 9, fontFamily: MONO }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fill: C.dim, fontSize: 9, fontFamily: MONO }} axisLine={false} tickLine={false} />
+                        <Tooltip contentStyle={{ background: C.plate2, border: `1px solid ${C.rule}`, borderRadius: 7, fontSize: 12, fontFamily: MONO }} labelStyle={{ color: C.dim }} />
+                        <Line type="monotone" dataKey="kg" stroke={C.moss} strokeWidth={2} dot={{ r: 3 }} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+
+                {ents.map((e) => (
+                  <div key={e.id} style={{ marginBottom: 7, paddingBottom: 7, borderBottom: `1px solid ${C.rule}` }}>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                      <input type="date" value={e.date} onChange={(ev) => patchEntry(l.id, e.id, "date", ev.target.value)}
+                        style={{ ...small, flex: "0 0 132px" }} />
+                      {e.pyr ? (
+                        <input value={e.pyr.join(", ")} onChange={(ev) => patchEntry(l.id, e.id, "pyr", ev.target.value)}
+                          placeholder="7, 8, 9, 10" style={{ ...small, flex: "1 1 120px", fontFamily: MONO }} />
+                      ) : (
+                        <>
+                          <input value={e.w ?? ""} onChange={(ev) => patchEntry(l.id, e.id, "w", ev.target.value)}
+                            placeholder="kg" inputMode="decimal" style={{ ...small, flex: "0 0 58px", textAlign: "center" }} />
+                          <input value={e.add ?? ""} onChange={(ev) => patchEntry(l.id, e.id, "add", ev.target.value)}
+                            placeholder="add" inputMode="decimal" style={{ ...small, flex: "0 0 54px", textAlign: "center" }} />
+                          <input value={e.inc ?? ""} onChange={(ev) => patchEntry(l.id, e.id, "inc", ev.target.value)}
+                            placeholder="inc" inputMode="decimal" style={{ ...small, flex: "0 0 54px", textAlign: "center" }} />
+                          <span style={{ fontFamily: MONO, fontSize: 13, color: C.moss, flex: "0 0 58px", textAlign: "right", fontWeight: 600 }}>
+                            {totalOf(e)}kg
+                          </span>
+                        </>
+                      )}
+                      <button onClick={() => delEntry(l.id, e.id)} style={{ background: "none", border: "none", color: C.rule, cursor: "pointer", padding: 2 }}>
+                        <X size={12} />
+                      </button>
+                    </div>
+                    {e.note && <div style={{ fontSize: 11, color: C.amber, marginTop: 3 }}>{e.note}</div>}
+                  </div>
+                ))}
+
+                <div style={{ display: "flex", gap: 7, marginTop: 9, flexWrap: "wrap" }}>
+                  <Btn onClick={() => addEntry(l)} active style={{ padding: "6px 11px", fontSize: 12 }}>
+                    <Plus size={11} /> Log today
+                  </Btn>
+                  <Btn onClick={() => patchLift(l.id, (x) => ({
+                    ...x, entries: [...x.entries, { id: "e" + Date.now(), date: todayKey, w: null, add: 0, inc: null, side: null, pyr: [0,0,0,0], note: "" }],
+                  }))} style={{ padding: "6px 11px", fontSize: 12 }}>
+                    <Plus size={11} /> Pyramid row
+                  </Btn>
+                  <span style={{ flex: 1 }} />
+                  <Btn onClick={() => setLifts(lifts.filter((x) => x.id !== l.id))}
+                    style={{ padding: "6px 11px", fontSize: 12, borderColor: C.signal, color: C.signal }}>
+                    Remove exercise
+                  </Btn>
+                </div>
+                {best > 0 && (
+                  <div style={{ fontFamily: MONO, fontSize: 10.5, color: C.dim, marginTop: 9 }}>
+                    BEST <strong style={{ color: C.bone }}>{best}kg</strong>
+                    {gain > 0 && <> · GAINED <strong style={{ color: C.moss }}>+{gain}kg</strong> SINCE {parseKey(first.date).toLocaleDateString("en-AU", { month: "short", year: "numeric" }).toUpperCase()}</>}
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
+        );
+      })}
+
       <Card>
-        <Eyebrow>Today's session</Eyebrow>
-        {w && w.exercises.length ? w.exercises.map((e) => (
-          <div key={e.name} style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 14, color: C.bone, marginBottom: 5, fontWeight: 500 }}>{e.name}</div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {e.sets.map((s, i) => <span key={i} style={{ fontFamily: MONO, fontSize: 12, background: C.plate2, border: `1px solid ${C.rule}`, borderRadius: 5, padding: "4px 8px", color: C.bone }}>{s.weight}×{s.reps}</span>)}
-            </div>
+        <Eyebrow right={<Btn onClick={addBody} style={{ padding: "4px 9px", fontSize: 11.5 }}><Plus size={10} /> Add</Btn>}>
+          Body measurements
+        </Eyebrow>
+        {body.length === 0 && <div style={{ fontSize: 12.5, color: C.dim }}>Nothing recorded.</div>}
+        {body.map((b) => (
+          <div key={b.id} style={{ display: "flex", gap: 7, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
+            <input type="date" value={b.date} onChange={(e) => patchBody(b.id, "date", e.target.value)}
+              style={{ ...small, flex: "0 0 132px" }} />
+            <input value={b.height ?? ""} onChange={(e) => patchBody(b.id, "height", e.target.value)}
+              placeholder="cm" inputMode="decimal" style={{ ...small, flex: "0 0 62px", textAlign: "center" }} />
+            <span style={{ fontSize: 11.5, color: C.dim }}>cm</span>
+            <input value={b.weight ?? ""} onChange={(e) => patchBody(b.id, "weight", e.target.value)}
+              placeholder="kg" inputMode="decimal" style={{ ...small, flex: "0 0 62px", textAlign: "center" }} />
+            <span style={{ fontSize: 11.5, color: C.dim }}>kg</span>
+            <button onClick={() => setState({ ...state, body: body.filter((x) => x.id !== b.id) })}
+              style={{ background: "none", border: "none", color: C.rule, cursor: "pointer", padding: 2 }}>
+              <X size={12} />
+            </button>
           </div>
-        )) : <div style={{ fontSize: 13, color: C.dim }}>Nothing logged. Add a set above to start the session.</div>}
+        ))}
       </Card>
-      {(state.prs || []).length > 0 && (
-        <Card>
-          <Eyebrow>Recent records</Eyebrow>
-          {[...state.prs].reverse().slice(0, 6).map((p, i) => (
-            <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: i < 5 ? `1px solid ${C.rule}` : "none" }}>
-              <span style={{ fontSize: 13, color: C.bone }}>{p.name}</span>
-              <span style={{ fontFamily: MONO, fontSize: 13, color: C.signal }}>{p.weight}kg × {p.reps}</span>
-            </div>
-          ))}
-        </Card>
-      )}
     </div>
   );
 }
-
 /* ============================== BACKUP ============================== */
 function Backup({ state, setState, storageOk, saveStatus, exportData }) {
   const [paste, setPaste] = useState("");
@@ -2086,6 +2287,8 @@ export default function LifeOS({ user }) {
         if (!base.atlas) base.atlas = SEED_PROGRESS;
         if (!base.practice) base.practice = SEED_PRACTICE;
         if (!base.papers) base.papers = SEED_PAPERS;
+        if (!base.lifts) base.lifts = SEED_LIFTS;
+        if (!base.body) base.body = SEED_BODY;
         if (!base.topics) base.topics = SEED_TOPICS;
         setState(base);
         setStorageOk(true);
