@@ -51,60 +51,69 @@ const BADGES = [
 const EXERCISES = ["Bench Press", "Incline Dumbbell Press", "Overhead Press", "Dumbbell Fly", "Barbell Row", "Lat Pulldown", "Pull-up", "Seated Cable Row", "Squat", "Romanian Deadlift", "Leg Press", "Leg Curl", "Calf Raise", "Barbell Curl", "Hammer Curl", "Tricep Pushdown", "Skull Crusher", "Lateral Raise"];
 
 /* ============================== VCE SEED ============================== */
-const S = (name, mark, total, date) => ({ id: name + (date || "") + total, name, mark, total, date: date || null });
+const S = (name, mark, total, date, weight) => ({ id: name + (date || "") + total, name, mark, total, date: date || null, weight: weight ?? null });
 const E = (name, date, time, location) => ({ name, date, time, location: location || null });
-/* Weightings: Software Dev confirmed by user. Others are standard VCE splits —
-   editable in-app, and worth confirming against your study design. */
+/* Per-SAC weights are % of the STUDY SCORE, checked against VCAA:
+     Physics 2024-27   five outcomes at 10 each, exam 50
+                       (school splits U4 O1 into 4a + 4b, so 5 + 5)
+     Methods 2023-27   U3 application task 20 · U4 two tasks 10 each · E1 20 · E2 40
+     English 2024-27   four outcomes at 12.5 each, exam 50
+     Indonesian SL     U3 25 · U4 25 · oral 12.5 · written 37.5
+     Software Dev      U3 SAC 10 · SAT 30 · U4 SAC 10 · exam 50
+   Every figure is editable — your school's split may differ. */
 const SEED_VCE = {
   subjects: [
     {
       id: "eng", name: "English", isEnglish: true, completed: false, raw: 38, scaled: 36,
-      weights: { u3: 25, u4: 25, exam: 50 },
       exams: [E("Exam", "2026-10-27", "9:00 am")],
       units: {
-        3: [S("Protest", 29, 40), S("Commentary", 16, 20), S("Sunset Boulevard", 34, 40)],
-        4: [S("Argument Analysis", 20, 40), S("Oral Presentation", 15, 20), S("Memory Police", 40, 40),
-            S("English SAC", null, 40, "2026-08-31")],
+        3: [S("Protest", 29, 40, null, 8.3), S("Commentary", 16, 20, null, 8.3), S("Sunset Boulevard", 34, 40, null, 8.4)],
+        4: [S("Argument Analysis", 20, 40, null, 6.25), S("Oral Presentation", 15, 20, null, 6.25),
+            S("Memory Police", 40, 40, null, 6.25), S("English SAC", null, 40, "2026-08-31", 6.25)],
       },
     },
     {
       id: "mm", name: "Maths Methods", completed: false, raw: 34, scaled: 39,
-      weights: { u3: 20, u4: 14, exam: 66 },
       exams: [E("Exam 1", "2026-11-05", "9:00 am"), E("Exam 2", "2026-11-06", "11:45 am")],
       units: {
-        3: [S("Functions (Part A)", 28, 42, "2026-03-20"), S("Application (Part B1)", 23, 33, "2026-05-28"), S("Application (Part B2)", 22, 32, "2026-06-03")],
-        4: [S("Calculus (Part 1)", null, null, "2026-07-31"), S("Calculus (Part 2)", null, null, "2026-08-04"), S("Probability", null, null, "2026-09-03")],
+        3: [S("Functions (Part A)", 28, 42, "2026-03-20", 7.8), S("Application (Part B1)", 23, 33, "2026-05-28", 6.2),
+            S("Application (Part B2)", 22, 32, "2026-06-03", 6.0)],
+        4: [S("Calculus (Part 1)", null, null, "2026-07-31", 5), S("Calculus (Part 2)", null, null, "2026-08-04", 5),
+            S("Probability", null, null, "2026-09-03", 10)],
       },
     },
     {
       id: "phy", name: "Physics", completed: false, raw: 32, scaled: 34,
-      weights: { u3: 21, u4: 19, exam: 60 },
       exams: [E("Exam", "2026-11-12", "9:00 am")],
       units: {
-        3: [S("Motion", 19, 39), S("Fields", 32, 45)],
-        4: [S("SAC 3", null, null), S("SAC 4 (final SAC)", null, null, "2026-09-02")],
+        3: [S("SAC 1: Motion", 17, 35, null, 10), S("SAC 2: Fields", 30, 38, null, 10),
+            S("SAC 3: Electricity", 27, 45, null, 10)],
+        4: [S("SAC 4a: Light & Matter", 20, 40, null, 5), S("SAC 4b: Special Relativity", 22, 30, null, 5),
+            S("SAC 5: Scientific Investigation", 22, 25, null, 10)],
       },
     },
     {
       id: "ind", name: "Indonesian SL", completed: false, raw: 43, scaled: 49,
-      weights: { u3: 25, u4: 25, exam: 50 },
       exams: [E("Oral", "2026-10-16", "1:25 pm", "Quality Hotel Manor, 669 Maroondah Hwy, Mitcham"), E("Written", "2026-11-17", "11:45 am")],
       units: {
-        3: [S("O1 Interpersonal", 15, 20, "2026-04-21"), S("O2 Interpretive", 13, 15, "2026-06-05"), S("O3 Presentational", 14, 15, "2026-06-12")],
-        4: [S("O1 Interpersonal", null, 20, "2026-07-31"), S("O2 Interpretive", null, 15, "2026-08-14"), S("O3 Presentational", null, 15, "2026-08-28")],
+        3: [S("O1 Interpersonal", 15, 20, "2026-04-21", 10), S("O2 Interpretive", 13, 15, "2026-06-05", 7.5),
+            S("O3 Presentational", 14, 15, "2026-06-12", 7.5)],
+        4: [S("O1 Interpersonal", null, 20, "2026-07-31", 10), S("O2 Interpretive", null, 15, "2026-08-14", 7.5),
+            S("O3 Presentational", null, 15, "2026-08-28", 7.5)],
       },
     },
     {
       id: "sd", name: "Software Development", completed: false, raw: 33, scaled: 31,
-      weights: { u3: 10, sat: 30, u4: 10, exam: 50 },
       exams: [E("Exam", "2026-11-13", "3:00 pm")],
       units: {
-        3: [S("Mod 1", 12, 20), S("Mod 2", 19, 27), S("Mod 3", 17, 30), S("Mod 4", null, 40),
-            S("AC1", 7, 10), S("AC2", 8, 10), S("AC3", 9, 10), S("AC4", 10, 10), S("AC5", null, 10)],
-        4: [S("SAT submission (30%)", null, null, "2026-08-07")],
+        3: [S("Mod 1", 12, 20, null, 1.6), S("Mod 2", 19, 27, null, 2.2), S("Mod 3", 17, 30, null, 2.4),
+            S("Mod 4", null, 40, null, 3.8),
+            S("AC1", 7, 10, null, 0), S("AC2", 8, 10, null, 0), S("AC3", 9, 10, null, 0),
+            S("AC4", 10, 10, null, 0), S("AC5", null, 10, null, 0)],
+        4: [S("SAT submission", null, null, "2026-08-07", 30), S("U4 SAC", null, null, null, 10)],
       },
     },
-    { id: "eco", name: "Economics", completed: true, raw: 40, scaled: 42, weights: {}, exams: [], units: { 3: [], 4: [] } },
+    { id: "eco", name: "Economics", completed: true, raw: 40, scaled: 42, exams: [], units: { 3: [], 4: [] } },
   ],
 };
 
@@ -237,7 +246,6 @@ function computeMeta(state) {
   Object.keys(state.days).sort().forEach((k) => { best = Math.max(best, streakAt(state.days, k)); });
   return { bestStreak: best, totalDeep: Object.values(state.days).reduce((a, d) => a + (d.study || 0) + (d.dev || 0), 0) };
 }
-const e1rm = (w, r) => Math.round(w * (1 + r / 30) * 10) / 10;
 
 /* --- VCE maths: ONLY count SACs that have a mark. This is the fix. --- */
 function unitAvg(sacs) {
@@ -251,32 +259,33 @@ function subjectAvg(sub) {
   return unitAvg(all);
 }
 
-/* How much of the final grade is already decided, and how you're doing on it. */
+/* How much of the study score is already decided, and how you're doing on it.
+   Weights are % of the study score, so they compare across subjects. */
 function standing(sub) {
-  const w = sub.weights || {};
-  if (!w.exam) return null;
+  const all = [...(sub.units[3] || []), ...(sub.units[4] || [])];
+  const weighted = all.filter((s) => s.weight);
+  if (!weighted.length) return null;
+  const totalSac = weighted.reduce((a, s) => a + s.weight, 0);
   let assessed = 0, earned = 0;
-  [3, 4].forEach((u) => {
-    const weight = w["u" + u] || 0;
-    const sacs = sub.units[u] || [];
-    if (!weight || !sacs.length) return;
-    const done = sacs.filter((s) => s.mark !== null && s.mark !== undefined && s.total);
-    if (!done.length) return;
-    // fraction of the unit's assessment that has been sat
-    const knownTotal = sacs.reduce((a, s) => a + (s.total || 0), 0);
-    const doneTotal = done.reduce((a, s) => a + s.total, 0);
-    const frac = knownTotal ? doneTotal / knownTotal : done.length / sacs.length;
-    const pct = done.reduce((a, s) => a + s.mark, 0) / doneTotal;
-    assessed += weight * frac;
-    earned += weight * frac * pct;
-  });
+  for (const s of weighted) {
+    if (s.mark === null || s.mark === undefined || !s.total) continue;
+    assessed += s.weight;
+    earned += s.weight * (s.mark / s.total);
+  }
   return {
     assessed: Math.round(assessed),
     remaining: Math.round(100 - assessed),
     pct: assessed > 0 ? earned / assessed : null,
-    examWeight: w.exam + (w.sat || 0),
+    examWeight: Math.round(100 - totalSac),
+    totalSac: Math.round(totalSac),
+    /* what you'd finish on if the exam matched your SAC average */
+    onTrack: assessed > 0 ? earned / assessed : null,
   };
 }
+
+const e1rm = (w, r) => Math.round(w * (1 + r / 30) * 10) / 10;
+
+/* --- VCE maths: ONLY count SACs that have a mark. This is the fix. --- */
 function aggregate(subjects) {
   const scored = subjects.map((s) => ({ ...s, sc: Number(s.scaled) || 0 })).filter((s) => s.sc > 0);
   const eng = scored.filter((s) => s.isEnglish).sort((a, b) => b.sc - a.sc)[0];
@@ -654,7 +663,7 @@ function VCE({ state, setState }) {
         ...vce,
         subjects: [...vce.subjects, {
           id, name: "New subject", completed: false, raw: null, rank: null, cohort: null,
-          weights: { u3: 25, u4: 25, exam: 50 }, exams: [], units: { 3: [], 4: [] },
+          exams: [], units: { 3: [], 4: [] },
         }],
       },
     });
@@ -753,6 +762,7 @@ function VCE({ state, setState }) {
                   {!sub.completed && (
                     <div style={{ fontFamily: MONO, fontSize: 11, color: C.dim, marginTop: 3 }}>
                       U3 {u3 ? Math.round(u3.pct * 100) + "%" : "—"} · U4 {u4 ? Math.round(u4.pct * 100) + "%" : "—"}
+                    {(() => { const st = standing(sub); return st ? <span style={{ color: C.steel }}> · {st.totalSac}% SAC / {st.examWeight}% exam</span> : null; })()}
                       {avg && avg.pending > 0 && <span style={{ color: C.amber }}> · {avg.pending} pending</span>}
                     </div>
                   )}
@@ -893,8 +903,8 @@ function VCE({ state, setState }) {
                           <div style={{ width: `${st.remaining}%`, background: C.plate2 }} />
                         </div>
                         <div style={{ fontSize: 12, color: C.dim, marginTop: 7, lineHeight: 1.5 }}>
-                          {st.pct !== null && <>Sitting at <span style={{ color: C.bone, fontFamily: MONO }}>{Math.round(st.pct * 100)}%</span> on what's been assessed. </>}
-                          The exam alone is <span style={{ color: C.bone, fontFamily: MONO }}>{st.examWeight}%</span> of this subject.
+                          {st.pct !== null && <>Weighted <span style={{ color: C.bone, fontFamily: MONO }}>{Math.round(st.pct * 100)}%</span> across the <span style={{ color: C.bone, fontFamily: MONO }}>{st.assessed}%</span> already marked. </>}
+                          The exam is <span style={{ color: C.bone, fontFamily: MONO }}>{st.examWeight}%</span>; all SACs together are <span style={{ color: C.bone, fontFamily: MONO }}>{st.totalSac}%</span>.
                         </div>
                       </div>
                     );
