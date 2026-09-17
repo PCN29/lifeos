@@ -53,6 +53,25 @@ const EXERCISES = ["Bench Press", "Incline Dumbbell Press", "Overhead Press", "D
 /* ============================== VCE SEED ============================== */
 const S = (name, mark, total, date, weight) => ({ id: name + (date || "") + total, name, mark, total, date: date || null, weight: weight ?? null });
 const E = (name, date, time, location) => ({ name, date, time, location: location || null });
+
+/* VCAA weights as % of study score, keyed by subject + SAC name.
+   Applied by the "Load VCAA weights" button so existing saved data can be
+   repaired without retyping. Verified against the study designs. */
+const VCAA_WEIGHTS = {
+  phy: { "SAC 1: Motion": 10, "SAC 2: Fields": 10, "SAC 3: Electricity": 10,
+         "SAC 4a: Light & Matter": 5, "SAC 4b: Special Relativity": 5,
+         "SAC 5: Scientific Investigation": 10,
+         "Motion": 10, "Fields": 10, "SAC 3": 10, "SAC 4 (final SAC)": 10 },
+  mm:  { "Functions (Part A)": 7.8, "Application (Part B1)": 6.2, "Application (Part B2)": 6,
+         "Calculus (Part 1)": 5, "Calculus (Part 2)": 5, "Probability": 10 },
+  eng: { "Protest": 8.3, "Commentary": 8.3, "Sunset Boulevard": 8.4,
+         "Argument Analysis": 6.25, "Oral Presentation": 6.25, "Memory Police": 6.25, "English SAC": 6.25 },
+  ind: { "O1 Interpersonal": 10, "O2 Interpretive": 7.5, "O3 Presentational": 7.5 },
+  sd:  { "Mod 1": 1.6, "Mod 2": 2.2, "Mod 3": 2.4, "Mod 4": 3.8,
+         "AC1": 0, "AC2": 0, "AC3": 0, "AC4": 0, "AC5": 0,
+         "SAT submission": 30, "SAT submission (30%)": 30, "U4 SAC": 10 },
+};
+
 /* Per-SAC weights are % of the STUDY SCORE, checked against VCAA:
      Physics 2024-27   five outcomes at 10 each, exam 50
                        (school splits U4 O1 into 4a + 4b, so 5 + 5)
@@ -655,6 +674,20 @@ function VCE({ state, setState }) {
 
   const setField = (id, field, v) => patchSubject(id, (s) => ({ ...s, [field]: v === "" ? null : (field === "name" ? v : Number(v)) }));
 
+  /* Overwrite weights from the VCAA table. Needed because saved data predates
+     the weights, and the seed only runs on a brand-new account. */
+  const loadVcaaWeights = (subId) => {
+    const map = VCAA_WEIGHTS[subId];
+    if (!map) return;
+    patchSubject(subId, (s) => ({
+      ...s,
+      units: {
+        3: (s.units[3] || []).map((x) => (x.name in map ? { ...x, weight: map[x.name] } : x)),
+        4: (s.units[4] || []).map((x) => (x.name in map ? { ...x, weight: map[x.name] } : x)),
+      },
+    }));
+  };
+
   const addSubject = () => {
     const id = "sub_" + Date.now();
     setState({
@@ -784,6 +817,12 @@ function VCE({ state, setState }) {
                     <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
                       <input value={sub.name} onChange={(e) => setField(sub.id, "name", e.target.value)}
                         style={{ ...smallInput, fontFamily: SANS, flex: "1 1 140px" }} />
+                      {VCAA_WEIGHTS[sub.id] && (
+                        <Btn onClick={() => loadVcaaWeights(sub.id)} active
+                          style={{ padding: "5px 10px", fontSize: 12 }}>
+                          Load VCAA weights
+                        </Btn>
+                      )}
                       {confirmDel === "sub:" + sub.id ? (
                         <>
                           <Btn onClick={() => removeSubject(sub.id)} style={{ borderColor: C.signal, color: C.signal, padding: "5px 9px", fontSize: 12 }}>Delete subject</Btn>
