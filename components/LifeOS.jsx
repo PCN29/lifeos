@@ -1,6 +1,11 @@
 "use client";
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import { loadRemote, saveRemote } from "../lib/store";
+import { loadRemote, saveRemote, remoteStamp } from "../lib/store";
+import { migrate } from "../lib/methods";
+import { scaleScore, atarFor, VTAC_YEAR } from "../lib/vtac";
+import { VCAA_WEIGHTS, VCAA_EXAM_WEIGHTS, SEED_PAPERS, SCHOOL_DEFAULT as SCHOOL, GRADED_YEAR,
+         estimateSS, rankProblem } from "../lib/vcaa";
+import { conceptStatus, LEVELS, SOLID_RULE } from "../lib/syllabus";
 import Atlas from "./Atlas";
 import { MuscleMap, Goal, Fuel } from "./Body";
 import { SEED_PROGRESS } from "../lib/atlas";
@@ -52,48 +57,25 @@ const EXERCISES = ["Bench Press", "Incline Dumbbell Press", "Overhead Press", "D
 
 /* ============================== VCE SEED ============================== */
 const S = (name, mark, total, date, weight) => ({ id: name + (date || "") + total, name, mark, total, date: date || null, weight: weight ?? null });
-const E = (name, date, time, location) => ({ name, date, time, location: location || null });
+const E = (name, date, time, location, weight) => ({ name, date, time, location: location || null, mark: null, total: null, weight: weight ?? null });
 
-/* VCAA weights as % of study score, keyed by subject + SAC name.
-   Applied by the "Load VCAA weights" button so existing saved data can be
-   repaired without retyping. Verified against the study designs. */
-const VCAA_WEIGHTS = {
-  phy: { "SAC 1: Motion": 10, "SAC 2: Fields": 10, "SAC 3: Electricity": 10,
-         "SAC 4a: Light & Matter": 5, "SAC 4b: Special Relativity": 5,
-         "SAC 5: Scientific Investigation": 10,
-         "Motion": 10, "Fields": 10, "SAC 3": 10, "SAC 4 (final SAC)": 10 },
-  mm:  { "Functions (Part A)": 7.8, "Application (Part B1)": 6.2, "Application (Part B2)": 6,
-         "Calculus (Part 1)": 5, "Calculus (Part 2)": 5, "Probability": 10 },
-  eng: { "Protest": 8.3, "Commentary": 8.3, "Sunset Boulevard": 8.4,
-         "Argument Analysis": 6.25, "Oral Presentation": 6.25, "Memory Police": 6.25, "English SAC": 6.25 },
-  ind: { "O1 Interpersonal": 10, "O2 Interpretive": 7.5, "O3 Presentational": 7.5 },
-  sd:  { "Mod 1": 1.6, "Mod 2": 2.2, "Mod 3": 2.4, "Mod 4": 3.8,
-         "AC1": 0, "AC2": 0, "AC3": 0, "AC4": 0, "AC5": 0,
-         "SAT submission": 30, "SAT submission (30%)": 30, "U4 SAC": 10 },
-};
-
-/* Per-SAC weights are % of the STUDY SCORE, checked against VCAA:
-     Physics 2024-27   five outcomes at 10 each, exam 50
-                       (school splits U4 O1 into 4a + 4b, so 5 + 5)
-     Methods 2023-27   U3 application task 20 · U4 two tasks 10 each · E1 20 · E2 40
-     English 2024-27   four outcomes at 12.5 each, exam 50
-     Indonesian SL     U3 25 · U4 25 · oral 12.5 · written 37.5
-     Software Dev      U3 SAC 10 · SAT 30 · U4 SAC 10 · exam 50
-   Every figure is editable — your school's split may differ. */
+/* Weights are % of the study score; the tables live in lib/vcaa.js with their
+   study-design sources. Every figure is editable, your school's split may differ.
+   Exam totals are filled from the VCAA specs by migrate(). */
 const SEED_VCE = {
   subjects: [
     {
       id: "eng", name: "English", isEnglish: true, completed: false, raw: 38, scaled: 36,
-      exams: [E("Exam", "2026-10-27", "9:00 am")],
+      exams: [E("Exam", "2026-10-27", "9:00 am", null, 50)],
       units: {
-        3: [S("Protest", 29, 40, null, 8.3), S("Commentary", 16, 20, null, 8.3), S("Sunset Boulevard", 34, 40, null, 8.4)],
-        4: [S("Argument Analysis", 20, 40, null, 6.25), S("Oral Presentation", 15, 20, null, 6.25),
-            S("Memory Police", 40, 40, null, 6.25), S("English SAC", null, 40, "2026-08-31", 6.25)],
+        3: [S("Protest", 29, 40, null, 10), S("Commentary", 16, 20, null, 5), S("Sunset Boulevard", 34, 40, null, 10)],
+        4: [S("Argument Analysis", 20, 40, null, 10), S("Oral Presentation", 15, 20, null, 5),
+            S("Memory Police", 40, 40, null, 10)],
       },
     },
     {
       id: "mm", name: "Maths Methods", completed: false, raw: 34, scaled: 39,
-      exams: [E("Exam 1", "2026-11-05", "9:00 am"), E("Exam 2", "2026-11-06", "11:45 am")],
+      exams: [E("Exam 1", "2026-11-05", "9:00 am", null, 20), E("Exam 2", "2026-11-06", "11:45 am", null, 40)],
       units: {
         3: [S("Functions (Part A)", 28, 42, "2026-03-20", 7.8), S("Application (Part B1)", 23, 33, "2026-05-28", 6.2),
             S("Application (Part B2)", 22, 32, "2026-06-03", 6.0)],
@@ -103,7 +85,7 @@ const SEED_VCE = {
     },
     {
       id: "phy", name: "Physics", completed: false, raw: 32, scaled: 34,
-      exams: [E("Exam", "2026-11-12", "9:00 am")],
+      exams: [E("Exam", "2026-11-12", "9:00 am", null, 50)],
       units: {
         3: [S("SAC 1: Motion", 17, 35, null, 10), S("SAC 2: Fields", 30, 38, null, 10),
             S("SAC 3: Electricity", 27, 45, null, 10)],
@@ -113,7 +95,7 @@ const SEED_VCE = {
     },
     {
       id: "ind", name: "Indonesian SL", completed: false, raw: 43, scaled: 49,
-      exams: [E("Oral", "2026-10-16", "1:25 pm", "Quality Hotel Manor, 669 Maroondah Hwy, Mitcham"), E("Written", "2026-11-17", "11:45 am")],
+      exams: [E("Oral", "2026-10-16", "1:25 pm", "Quality Hotel Manor, 669 Maroondah Hwy, Mitcham", 12.5), E("Written", "2026-11-17", "11:45 am", null, 37.5)],
       units: {
         3: [S("O1 Interpersonal", 15, 20, "2026-04-21", 10), S("O2 Interpretive", 13, 15, "2026-06-05", 7.5),
             S("O3 Presentational", 14, 15, "2026-06-12", 7.5)],
@@ -123,7 +105,7 @@ const SEED_VCE = {
     },
     {
       id: "sd", name: "Software Development", completed: false, raw: 33, scaled: 31,
-      exams: [E("Exam", "2026-11-13", "3:00 pm")],
+      exams: [E("Exam", "2026-11-13", "3:00 pm", null, 50)],
       units: {
         3: [S("Mod 1", 12, 20, null, 1.6), S("Mod 2", 19, 27, null, 2.2), S("Mod 3", 17, 30, null, 2.4),
             S("Mod 4", null, 40, null, 3.8),
@@ -135,72 +117,6 @@ const SEED_VCE = {
     { id: "eco", name: "Economics", completed: true, raw: 40, scaled: 42, exams: [], units: { 3: [], 4: [] } },
   ],
 };
-
-/* ATAR anchors — approximate, interpolated. Real table is published by VTAC each year. */
-const ATAR_ANCHORS = [
-  [0, 0], [65, 50], [80, 60], [97, 70], [117, 80], [143, 90],
-  [163, 95], [181, 98], [190, 99], [211, 99.95],
-];
-function atarFor(agg) {
-  const a = ATAR_ANCHORS;
-  if (agg >= a[a.length - 1][0]) return 99.95;
-  for (let i = 0; i < a.length - 1; i++) {
-    if (agg >= a[i][0] && agg < a[i + 1][0]) {
-      const t = (agg - a[i][0]) / (a[i + 1][0] - a[i][0]);
-      return Math.round((a[i][1] + t * (a[i + 1][1] - a[i][1])) * 20) / 20;
-    }
-  }
-  return 0;
-}
-
-/* --- School profile: McKinnon SC, from published 2025 results --- */
-const SCHOOL = { name: "McKinnon SC", medianSS: 33, sd: 6 };
-
-/* --- Scaling curves (raw study score -> scaled). VTAC scales on a curve,
-   not a flat offset. These reproduce the numbers you'd already worked out.
-   Scaling shifts every year, so treat them as last year's shape. --- */
-const SCALE_POINTS = [20, 25, 30, 35, 40, 45, 50];
-const SCALING = {
-  eng: [19, 24, 28.5, 33, 38, 43.5, 50],
-  mm: [22, 28, 34, 40, 45.5, 48, 50],
-  phy: [20, 25.5, 31.5, 37, 42, 46.5, 50],
-  sd: [18, 23, 28, 33, 38, 43.5, 50],
-  ind: [26, 32, 37, 42, 46, 50, 50],
-  eco: [21, 26.5, 32, 37, 42, 46.5, 50],
-};
-function scaleScore(subId, raw) {
-  const curve = SCALING[subId];
-  if (!curve || !raw) return 0;
-  if (raw <= SCALE_POINTS[0]) return Math.round(curve[0] * (raw / SCALE_POINTS[0]) * 10) / 10;
-  for (let i = 0; i < SCALE_POINTS.length - 1; i++) {
-    if (raw >= SCALE_POINTS[i] && raw <= SCALE_POINTS[i + 1]) {
-      const t = (raw - SCALE_POINTS[i]) / (SCALE_POINTS[i + 1] - SCALE_POINTS[i]);
-      return Math.round((curve[i] + t * (curve[i + 1] - curve[i])) * 10) / 10;
-    }
-  }
-  return curve[curve.length - 1];
-}
-
-/* --- Inverse normal CDF (Acklam): percentile -> z-score --- */
-function probit(p) {
-  if (p <= 0) return -4; if (p >= 1) return 4;
-  const a = [-39.6968302866538, 220.946098424521, -275.928510446969, 138.357751867269, -30.6647980661472, 2.50662827745924];
-  const b = [-54.4760987982241, 161.585836858041, -155.698979859887, 66.8013118877197, -13.2806815528857];
-  const c = [-0.00778489400243029, -0.322396458041136, -2.40075827716184, -2.54973253934373, 4.37466414146497, 2.93816398269878];
-  const d = [0.00778469570904146, 0.32246712907004, 2.445134137143, 3.75440866190742];
-  const pl = 0.02425; let q, r;
-  if (p < pl) { q = Math.sqrt(-2 * Math.log(p)); return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1); }
-  if (p > 1 - pl) { q = Math.sqrt(-2 * Math.log(1 - p)); return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1); }
-  q = p - 0.5; r = q * q;
-  return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
-}
-
-/* Rank in your cohort -> estimated study score. */
-function ssFromRank(rank, cohort, median = SCHOOL.medianSS, sd = SCHOOL.sd) {
-  if (!rank || !cohort || rank < 1 || rank > cohort) return null;
-  const z = probit(1 - (rank - 0.5) / cohort);
-  return Math.max(0, Math.min(50, Math.round(median + sd * z)));
-}
 
 /* ============================== HABIT SEED ============================== */
 const D = (date, study, dev, gym, tennis, creatine, medDay, medNight, split) =>
@@ -278,27 +194,48 @@ function subjectAvg(sub) {
   return unitAvg(all);
 }
 
+/* Exam weights: use the stored one, else split whatever the SACs leave
+   evenly across the exams that don't have one. */
+function examWeights(sub, totalSac) {
+  const exams = sub.exams || [];
+  const set = exams.reduce((a, x) => a + (Number(x.weight) || 0), 0);
+  const unset = exams.filter((x) => !x.weight).length;
+  const share = unset ? Math.max(0, 100 - totalSac - set) / unset : 0;
+  return exams.map((x) => Number(x.weight) || share);
+}
+const isMarked = (x) => x.mark !== null && x.mark !== undefined && x.total;
+
 /* How much of the study score is already decided, and how you're doing on it.
-   Weights are % of the study score, so they compare across subjects. */
+   Weights are % of the study score, so they compare across subjects.
+   Exams count too once they have a mark. */
 function standing(sub) {
   const all = [...(sub.units[3] || []), ...(sub.units[4] || [])];
   const weighted = all.filter((s) => s.weight);
   if (!weighted.length) return null;
   const totalSac = weighted.reduce((a, s) => a + s.weight, 0);
-  let assessed = 0, earned = 0;
-  for (const s of weighted) {
-    if (s.mark === null || s.mark === undefined || !s.total) continue;
+  const ew = examWeights(sub, totalSac);
+  const parts = [
+    ...weighted.map((s) => ({ ...s, exam: false })),
+    ...(sub.exams || []).map((x, i) => ({ ...x, weight: ew[i], exam: true })),
+  ];
+  let assessed = 0, earned = 0, sacAssessed = 0, sacEarned = 0;
+  for (const s of parts) {
+    if (!s.weight || !isMarked(s)) continue;
     assessed += s.weight;
     earned += s.weight * (s.mark / s.total);
+    if (!s.exam) { sacAssessed += s.weight; sacEarned += s.weight * (s.mark / s.total); }
   }
+  const examWeight = ew.length ? ew.reduce((a, w) => a + w, 0) : 100 - totalSac;
   return {
     assessed: Math.round(assessed),
-    remaining: Math.round(100 - assessed),
+    remaining: Math.max(0, Math.round(100 - assessed)),
     pct: assessed > 0 ? earned / assessed : null,
-    examWeight: Math.round(100 - totalSac),
+    sacPct: sacAssessed > 0 ? sacEarned / sacAssessed : null,
+    examWeight: Math.round(examWeight),
+    examWeights: ew,
     totalSac: Math.round(totalSac),
-    /* what you'd finish on if the exam matched your SAC average */
-    onTrack: assessed > 0 ? earned / assessed : null,
+    examsMarked: (sub.exams || []).filter(isMarked).length,
+    weightsOff: Math.abs(totalSac + examWeight - 100) > 0.5 ? Math.round((totalSac + examWeight) * 10) / 10 : null,
   };
 }
 
@@ -375,7 +312,8 @@ function QuickAdd({ state, onApply }) {
   const [result, setResult] = useState(null);
   const [err, setErr] = useState(null);
 
-  const subjectList = state.vce.subjects.map((s) => `${s.id} = ${s.name}`).join(", ");
+  const subjectList = state.vce.subjects.map((s) =>
+    `${s.id} = ${s.name}${(s.exams || []).length ? ` (exams: ${s.exams.map((x) => x.name).join(", ")})` : ""}`).join(", ");
   const todayKey = key(new Date());
   const todayName = new Date().toLocaleDateString("en-AU", { weekday: "long" });
 
@@ -394,6 +332,7 @@ Each action is one of:
 {"type":"add_assessment","subjectId":"sd","unit":3,"name":"SAC 4","date":"2026-08-28","weight":10,"total":null}
 {"type":"add_exam","subjectId":"phy","name":"Exam","date":"2026-11-12","time":"9:00 am","location":null}
 {"type":"set_mark","subjectId":"mm","unit":4,"name":"Calculus (Part 1)","mark":28,"total":40}
+{"type":"set_exam_mark","subjectId":"mm","name":"Exam 1","mark":31,"total":40}
 {"type":"log_time","field":"study","minutes":90}
 {"type":"set_habit","habit":"gym","value":true}
 {"type":"add_note","text":"..."}
@@ -403,6 +342,7 @@ Rules:
 - Resolve relative dates ("this Friday", "next Tuesday") against today's date. Output ISO YYYY-MM-DD.
 - weight is a percentage number if the user states one, else null.
 - For set_mark, match "name" to an existing SAC name as closely as you can.
+- Use set_exam_mark for a result on one of the subject's exams listed above; match "name" to that exam's name. Practice papers are not exams.
 - If you cannot interpret the input, return {"actions":[],"summary":"Didn't understand that."}
 
 Input: ${text}`;
@@ -664,27 +604,30 @@ function VCE({ state, setState }) {
     });
 
   const addExam = (subId) =>
-    patchSubject(subId, (s) => ({ ...s, exams: [...(s.exams || []), { name: "New exam", date: key(new Date()), time: "", location: null }] }));
+    patchSubject(subId, (s) => ({ ...s, exams: [...(s.exams || []), E("New exam", key(new Date()), "")] }));
 
   const updateExam = (subId, i, field, value) =>
-    patchSubject(subId, (s) => ({ ...s, exams: s.exams.map((x, k) => (k === i ? { ...x, [field]: value } : x)) }));
+    patchSubject(subId, (s) => ({ ...s, exams: s.exams.map((x, k) => (k !== i ? x
+      : { ...x, [field]: ["mark", "total", "weight"].includes(field) ? (value === "" ? null : Number(value)) : value })) }));
 
   const removeExam = (subId, i) =>
     patchSubject(subId, (s) => ({ ...s, exams: s.exams.filter((_, k) => k !== i) }));
 
   const setField = (id, field, v) => patchSubject(id, (s) => ({ ...s, [field]: v === "" ? null : (field === "name" ? v : Number(v)) }));
+  /* Typing a study score pins it; clearing it (or "use estimate") hands back to the estimate. */
+  const setSS = (id, v) => patchSubject(id, (s) => ({ ...s, raw: v === "" ? null : Number(v), ssManual: v !== "" }));
 
   /* Overwrite weights from the VCAA table. Needed because saved data predates
      the weights, and the seed only runs on a brand-new account. */
   const loadVcaaWeights = (subId) => {
-    const map = VCAA_WEIGHTS[subId];
-    if (!map) return;
+    const map = VCAA_WEIGHTS[subId] || {}, emap = VCAA_EXAM_WEIGHTS[subId] || {};
     patchSubject(subId, (s) => ({
       ...s,
       units: {
         3: (s.units[3] || []).map((x) => (x.name in map ? { ...x, weight: map[x.name] } : x)),
         4: (s.units[4] || []).map((x) => (x.name in map ? { ...x, weight: map[x.name] } : x)),
       },
+      exams: (s.exams || []).map((x) => (x.name in emap ? { ...x, weight: emap[x.name] } : x)),
     }));
   };
 
@@ -709,12 +652,15 @@ function VCE({ state, setState }) {
   };
 
   const projected = vce.subjects.map((s) => {
-    const est = ssFromRank(s.rank, s.cohort);
-    const raw = est ?? s.raw ?? 0;
-    return { ...s, estFromRank: est, effRaw: raw, sc: scaleScore(s.id, raw) };
+    const model = s.completed ? null : estimateSS(s, SCHOOL);
+    const manual = !s.completed && s.ssManual && s.raw !== null && s.raw !== undefined;
+    const ss = s.completed || manual ? (s.raw ?? 0) : model ? model.ss : (s.raw ?? 0);
+    const src = s.completed ? "final" : manual ? "typed" : model ? "model" : s.raw ? "typed" : "none";
+    return { ...s, model, manual, ssEff: ss, src, sc: scaleScore(s.id, ss) };
   });
   const agg = aggregate(projected.map((s) => ({ ...s, scaled: s.sc })));
-  const est = agg ? atarFor(agg.total) : 0;
+  const est = agg ? atarFor(agg.total) : null;
+  const modelOf = Object.fromEntries(projected.map((s) => [s.id, s]));
 
   const smallInput = { ...inputStyle, padding: "5px 7px", fontSize: 12.5 };
 
@@ -723,7 +669,7 @@ function VCE({ state, setState }) {
       <div className="los-split">
         <Card style={{ padding: 18 }}>
           <Eyebrow right={<span style={{ fontFamily: MONO, fontSize: 10, color: C.dim }}>AGG {agg ? agg.total : "—"}</span>}>Estimated ATAR</Eyebrow>
-          <div style={{ fontFamily: MONO, fontSize: 48, color: C.signal, lineHeight: 1.05, fontVariantNumeric: "tabular-nums" }}>{est.toFixed(2)}</div>
+          <div style={{ fontFamily: MONO, fontSize: 48, color: C.signal, lineHeight: 1.05, fontVariantNumeric: "tabular-nums" }}>{!agg ? "—" : est === null ? "<30" : est.toFixed(2)}</div>
           {agg && (
             <div style={{ fontFamily: MONO, fontSize: 12.5, lineHeight: 1.85, color: C.bone, marginTop: 12, borderTop: `1px solid ${C.rule}`, paddingTop: 10 }}>
               <div><span style={{ color: C.steel }}>{agg.eng.name}</span> {agg.eng.sc} <span style={{ color: C.dim }}>· English, compulsory</span></div>
@@ -738,15 +684,17 @@ function VCE({ state, setState }) {
           <Eyebrow>How this is worked out</Eyebrow>
           <div style={{ fontSize: 12.5, color: C.dim, lineHeight: 1.65 }}>
             <p style={{ margin: "0 0 9px" }}>
-              <strong style={{ color: C.bone }}>Rank → study score.</strong> Your percentile goes through an
-              inverse-normal onto {SCHOOL.name}'s distribution (median {SCHOOL.medianSS}, SD {SCHOOL.sd}).
+              <strong style={{ color: C.bone }}>Marks → study score.</strong> Each graded assessment is placed in the
+              state using VCAA's {GRADED_YEAR} grade distributions. Coursework uses your school rank, moderated to
+              {" "}{SCHOOL.name}'s standing (median {SCHOOL.medianSS}), or your SAC % if there's no rank. An exam you
+              haven't sat is predicted from the rest, pulled towards average. Combined on VCAA's scale (mean 30, SD 7).
             </p>
             <p style={{ margin: "0 0 9px" }}>
-              <strong style={{ color: C.bone }}>Study score → scaled.</strong> Applied as a curve across seven
-              anchor points, not a flat offset.
+              <strong style={{ color: C.bone }}>Study score → scaled.</strong> VTAC's {VTAC_YEAR} scaling report.
             </p>
             <p style={{ margin: 0 }}>
-              <strong style={{ color: C.bone }}>Scaled → ATAR.</strong> English + next three + 10% of the fifth and sixth.
+              <strong style={{ color: C.bone }}>Scaled → ATAR.</strong> English + best three + 10% of the fifth and sixth,
+              looked up in VTAC's {VTAC_YEAR} aggregate-to-ATAR table (exact, not interpolated).
             </p>
           </div>
         </Card>
@@ -754,26 +702,44 @@ function VCE({ state, setState }) {
 
       <Card style={{ padding: 14 }}>
         <Eyebrow right={<span style={{ fontFamily: MONO, fontSize: 10, color: C.dim }}>RANK / COHORT → SS → SCALED</span>}>Projections</Eyebrow>
-        {projected.map((s) => (
-          <div key={s.id} style={{ display: "flex", gap: 7, alignItems: "center", marginBottom: 7, flexWrap: "wrap" }}>
-            <span style={{ flex: "1 1 140px", fontSize: 13.5, color: C.bone, minWidth: 0 }}>
-              {s.name}{s.isEnglish && <span style={{ fontFamily: MONO, fontSize: 9, color: C.steel, marginLeft: 5 }}>ENG</span>}
-            </span>
-            <input value={s.rank ?? ""} onChange={(e) => setField(s.id, "rank", e.target.value)} placeholder="rank" inputMode="numeric"
-              style={{ ...smallInput, flex: "0 0 54px", textAlign: "center" }} />
-            <span style={{ color: C.dim, fontSize: 12 }}>/</span>
-            <input value={s.cohort ?? ""} onChange={(e) => setField(s.id, "cohort", e.target.value)} placeholder="of" inputMode="numeric"
-              style={{ ...smallInput, flex: "0 0 54px", textAlign: "center" }} />
-            <span style={{ color: C.dim, fontSize: 12 }}>→</span>
-            <input value={s.estFromRank ?? s.raw ?? ""} onChange={(e) => setField(s.id, "raw", e.target.value)}
-              disabled={s.estFromRank !== null} inputMode="numeric"
-              style={{ ...smallInput, flex: "0 0 54px", textAlign: "center", opacity: s.estFromRank !== null ? .6 : 1 }} />
-            <span style={{ color: C.dim, fontSize: 12 }}>→</span>
-            <span style={{ fontFamily: MONO, fontSize: 15, color: C.moss, flex: "0 0 46px", textAlign: "right" }}>{s.sc}</span>
-          </div>
-        ))}
+        {projected.map((s) => {
+          const bad = s.completed ? null : rankProblem(s);
+          const tag = s.src === "final" ? "final score"
+            : s.src === "typed" ? "typed by you"
+            : s.src === "model" ? s.model.parts.map((p) => `${p.label} ${p.src === "rank" ? "rank" : p.src === "marks" ? Math.round(p.pct * 100) + "%" : "predicted"}`).join(" · ")
+            : "no marks yet";
+          return (
+            <div key={s.id} style={{ marginBottom: 9 }}>
+              <div style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ flex: "1 1 140px", fontSize: 13.5, color: C.bone, minWidth: 0 }}>
+                  {s.name}{s.isEnglish && <span style={{ fontFamily: MONO, fontSize: 9, color: C.steel, marginLeft: 5 }}>ENG</span>}
+                </span>
+                <input value={s.rank ?? ""} onChange={(e) => setField(s.id, "rank", e.target.value)} placeholder="rank" inputMode="numeric"
+                  disabled={s.completed} style={{ ...smallInput, flex: "0 0 54px", textAlign: "center", borderColor: bad ? C.signal : C.rule, opacity: s.completed ? .5 : 1 }} />
+                <span style={{ color: C.dim, fontSize: 12 }}>/</span>
+                <input value={s.cohort ?? ""} onChange={(e) => setField(s.id, "cohort", e.target.value)} placeholder="of" inputMode="numeric"
+                  disabled={s.completed} style={{ ...smallInput, flex: "0 0 54px", textAlign: "center", borderColor: bad ? C.signal : C.rule, opacity: s.completed ? .5 : 1 }} />
+                <span style={{ color: C.dim, fontSize: 12 }}>→</span>
+                <input value={s.src === "model" ? s.model.ss : (s.raw ?? "")} onChange={(e) => (s.completed ? setField(s.id, "raw", e.target.value) : setSS(s.id, e.target.value))}
+                  inputMode="decimal" title={s.src === "model" ? "Estimated. Type to pin your own." : undefined}
+                  style={{ ...smallInput, flex: "0 0 54px", textAlign: "center", color: s.src === "model" ? C.steel : C.bone }} />
+                <span style={{ color: C.dim, fontSize: 12 }}>→</span>
+                <span style={{ fontFamily: MONO, fontSize: 15, color: C.moss, flex: "0 0 46px", textAlign: "right" }}>{s.sc}</span>
+              </div>
+              <div style={{ fontFamily: MONO, fontSize: 10, color: bad ? C.signal : C.dim, marginTop: 3, lineHeight: 1.4 }}>
+                {bad ? `Rank ignored: ${bad}.` : tag}
+                {s.manual && s.model && (
+                  <button onClick={() => setSS(s.id, "")} style={{ marginLeft: 8, background: "none", border: `1px solid ${C.rule}`, borderRadius: 4,
+                    color: C.steel, fontFamily: MONO, fontSize: 9.5, padding: "1px 6px", cursor: "pointer" }}>
+                    use estimate {s.model.ss}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
         <div style={{ fontSize: 11.5, color: C.dim, lineHeight: 1.55, borderTop: `1px solid ${C.rule}`, paddingTop: 9, marginTop: 4 }}>
-          Leave rank blank to type a study score by hand. Filling in rank overrides it.
+          Blue study scores are estimates that update as marks come in. Type over one to pin your own; clear it to go back.
         </div>
       </Card>
 
@@ -781,6 +747,7 @@ function VCE({ state, setState }) {
         {vce.subjects.map((sub) => {
           const avg = subjectAvg(sub);
           const u3 = unitAvg(sub.units[3]), u4 = unitAvg(sub.units[4]);
+          const st = standing(sub);
           const isOpen = open === sub.id;
           const isEditing = editing === sub.id;
           return (
@@ -795,8 +762,9 @@ function VCE({ state, setState }) {
                   {!sub.completed && (
                     <div style={{ fontFamily: MONO, fontSize: 11, color: C.dim, marginTop: 3 }}>
                       U3 {u3 ? Math.round(u3.pct * 100) + "%" : "—"} · U4 {u4 ? Math.round(u4.pct * 100) + "%" : "—"}
-                    {(() => { const st = standing(sub); return st ? <span style={{ color: C.steel }}> · {st.totalSac}% SAC / {st.examWeight}% exam</span> : null; })()}
+                      {st && <span style={{ color: C.steel }}> · {st.totalSac}% SAC / {st.examWeight}% exam</span>}
                       {avg && avg.pending > 0 && <span style={{ color: C.amber }}> · {avg.pending} pending</span>}
+                      {modelOf[sub.id]?.src === "model" && <span style={{ color: C.moss }}> · est. SS {modelOf[sub.id].model.ss}</span>}
                     </div>
                   )}
                 </button>
@@ -806,9 +774,16 @@ function VCE({ state, setState }) {
                     border: `1px solid ${isEditing ? C.signal : C.rule}`, borderRadius: 6,
                     padding: "4px 9px", fontSize: 11.5, cursor: "pointer", fontFamily: SANS, flexShrink: 0,
                   }}>{isEditing ? "Done" : "Edit"}</button>
-                <span style={{ fontFamily: MONO, fontSize: 22, flexShrink: 0, minWidth: 34, textAlign: "right", color: avg ? (avg.pct >= .8 ? C.moss : avg.pct >= .6 ? C.amber : C.signal) : C.dim }}>
-                  {avg ? Math.round(avg.pct * 100) : "—"}
-                </span>
+                {(() => {
+                  /* Weighted by each task's share of the study score when weights exist; plain marks otherwise. */
+                  const head = st?.pct ?? avg?.pct ?? null;
+                  return (
+                    <span title={st?.pct != null ? "Weighted % across everything marked so far" : "Average of marked SACs (add weights for a weighted figure)"}
+                      style={{ fontFamily: MONO, fontSize: 22, flexShrink: 0, minWidth: 34, textAlign: "right", color: head === null ? C.dim : head >= .8 ? C.moss : head >= .6 ? C.amber : C.signal }}>
+                      {head === null ? "—" : Math.round(head * 100)}
+                    </span>
+                  );
+                })()}
               </div>
 
               {isOpen && (
@@ -897,27 +872,55 @@ function VCE({ state, setState }) {
                     <div style={{ borderTop: `1px solid ${C.rule}`, paddingTop: 10, marginBottom: 10 }}>
                       <div style={{ fontFamily: MONO, fontSize: 10, color: C.dim, letterSpacing: 1.2, marginBottom: 7 }}>EXAMS</div>
                       {(sub.exams || []).map((x, i) => {
-                        const d = Math.ceil((parseKey(x.date) - new Date()) / 86400000);
+                        const d = x.date ? Math.ceil((parseKey(x.date) - new Date()) / 86400000) : null;
+                        const ew = st?.examWeights[i];
+                        const markInputs = (
+                          <>
+                            <input value={x.mark ?? ""} onChange={(e) => updateExam(sub.id, i, "mark", e.target.value)}
+                              placeholder="—" inputMode="decimal" style={{ ...smallInput, flex: "0 0 54px", textAlign: "center" }} />
+                            <span style={{ color: C.dim, fontFamily: MONO, fontSize: 13 }}>/</span>
+                            <input value={x.total ?? ""} onChange={(e) => updateExam(sub.id, i, "total", e.target.value)}
+                              placeholder="—" inputMode="decimal" style={{ ...smallInput, flex: "0 0 54px", textAlign: "center" }} />
+                            <span style={{ fontFamily: MONO, fontSize: 12, color: x.mark > x.total ? C.signal : C.dim, flex: "0 0 40px", textAlign: "right" }}>
+                              {isMarked(x) ? Math.round((x.mark / x.total) * 100) + "%" : ""}
+                            </span>
+                          </>
+                        );
                         return isEditing ? (
-                          <div key={i} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
-                            <input value={x.name} onChange={(e) => updateExam(sub.id, i, "name", e.target.value)}
-                              style={{ ...smallInput, fontFamily: SANS, flex: "1 1 90px" }} />
-                            <input type="date" value={x.date || ""} onChange={(e) => updateExam(sub.id, i, "date", e.target.value)}
-                              style={{ ...smallInput, flex: "0 0 140px" }} />
-                            <input value={x.time || ""} onChange={(e) => updateExam(sub.id, i, "time", e.target.value)}
-                              placeholder="time" style={{ ...smallInput, flex: "0 0 80px" }} />
-                            <Btn onClick={() => removeExam(sub.id, i)} style={{ padding: "4px 8px", fontSize: 12 }}><X size={12} /></Btn>
+                          <div key={i} style={{ marginBottom: 10 }}>
+                            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                              <input value={x.name} onChange={(e) => updateExam(sub.id, i, "name", e.target.value)}
+                                style={{ ...smallInput, fontFamily: SANS, flex: "1 1 120px" }} />
+                              {markInputs}
+                            </div>
+                            <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 5, flexWrap: "wrap" }}>
+                              <input type="date" value={x.date || ""} onChange={(e) => updateExam(sub.id, i, "date", e.target.value)}
+                                style={{ ...smallInput, flex: "0 0 140px" }} />
+                              <input value={x.time || ""} onChange={(e) => updateExam(sub.id, i, "time", e.target.value)}
+                                placeholder="time" style={{ ...smallInput, flex: "0 0 80px" }} />
+                              <input value={x.weight ?? ""} onChange={(e) => updateExam(sub.id, i, "weight", e.target.value)}
+                                placeholder={ew ? `${Math.round(ew * 10) / 10}% auto` : "% of SS"} inputMode="decimal"
+                                style={{ ...smallInput, flex: "0 0 80px", textAlign: "center" }} />
+                              <Btn onClick={() => removeExam(sub.id, i)} style={{ padding: "4px 8px", fontSize: 12 }}><X size={12} /></Btn>
+                            </div>
                           </div>
                         ) : (
                           <div key={i} style={{ marginBottom: 6 }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, gap: 8 }}>
-                              <span style={{ color: C.bone }}>{x.name}</span>
-                              <span style={{ fontFamily: MONO, fontSize: 12, color: C.dim, textAlign: "right" }}>
-                                {parseKey(x.date).toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" })}
-                                {x.time ? ` · ${x.time}` : ""}<span style={{ color: C.steel }}> · {d}d</span>
+                            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                              <span style={{ flex: "1 1 130px", fontSize: 13, color: isMarked(x) ? C.bone : C.dim, minWidth: 0 }}>
+                                {x.name}
+                                {ew ? <span style={{ fontFamily: MONO, fontSize: 10, color: C.violet, marginLeft: 6 }}>{Math.round(ew * 10) / 10}%</span> : null}
+                                {x.date && (
+                                  <span style={{ fontFamily: MONO, fontSize: 10.5, color: C.dim, marginLeft: 6 }}>
+                                    {parseKey(x.date).toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" })}
+                                    {x.time ? ` · ${x.time}` : ""}
+                                    {d >= 0 && <span style={{ color: d <= 7 ? C.signal : C.steel }}> · {d}d</span>}
+                                  </span>
+                                )}
                               </span>
+                              {markInputs}
                             </div>
-                            {x.location && <div style={{ fontSize: 11.5, color: C.amber, marginTop: 2, lineHeight: 1.4 }}>{x.location}</div>}
+                            {x.location && d >= 0 && <div style={{ fontSize: 11.5, color: C.amber, marginTop: 2, lineHeight: 1.4 }}>{x.location}</div>}
                           </div>
                         );
                       })}
@@ -930,7 +933,6 @@ function VCE({ state, setState }) {
                   )}
 
                   {(() => {
-                    const st = standing(sub);
                     if (!st) return null;
                     return (
                       <div style={{ borderTop: `1px solid ${C.rule}`, paddingTop: 10 }}>
@@ -942,8 +944,35 @@ function VCE({ state, setState }) {
                           <div style={{ width: `${st.remaining}%`, background: C.plate2 }} />
                         </div>
                         <div style={{ fontSize: 12, color: C.dim, marginTop: 7, lineHeight: 1.5 }}>
-                          {st.pct !== null && <>Weighted <span style={{ color: C.bone, fontFamily: MONO }}>{Math.round(st.pct * 100)}%</span> across the <span style={{ color: C.bone, fontFamily: MONO }}>{st.assessed}%</span> already marked. </>}
-                          The exam is <span style={{ color: C.bone, fontFamily: MONO }}>{st.examWeight}%</span>; all SACs together are <span style={{ color: C.bone, fontFamily: MONO }}>{st.totalSac}%</span>.
+                          {st.pct !== null && <>Weighted <span style={{ color: C.bone, fontFamily: MONO }}>{Math.round(st.pct * 100)}%</span> across the <span style={{ color: C.bone, fontFamily: MONO }}>{st.assessed}%</span> already marked{st.examsMarked > 0 && st.sacPct !== null && <> (SACs alone <span style={{ color: C.bone, fontFamily: MONO }}>{Math.round(st.sacPct * 100)}%</span>)</>}. </>}
+                          {(sub.exams || []).length > 1 ? "Exams are" : "The exam is"} <span style={{ color: C.bone, fontFamily: MONO }}>{st.examWeight}%</span>; all SACs together are <span style={{ color: C.bone, fontFamily: MONO }}>{st.totalSac}%</span>.
+                          {st.weightsOff !== null && <span style={{ color: C.amber }}> Weights add to {st.weightsOff}%, not 100. Check them.</span>}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {(() => {
+                    /* What the exams still to come need, for a few study-score targets. */
+                    const m = modelOf[sub.id]?.model;
+                    const rows = m ? [30, 35, 40, 45].map((t) => ({ t, need: m.need(t) })).filter((r) => r.need) : [];
+                    if (!rows.length) return null;
+                    const fmt = (x) => (x.impossible || x.pct >= 0.995 ? "out of reach" : `${Math.max(1, Math.round(x.pct * 100))}%`);
+                    return (
+                      <div style={{ borderTop: `1px solid ${C.rule}`, paddingTop: 10, marginTop: 10 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontFamily: MONO, fontSize: 10, color: C.dim, letterSpacing: 1.2, marginBottom: 6 }}>
+                          <span>EXAM NEEDED FOR</span><span>EST. SS {m.ss}</span>
+                        </div>
+                        {rows.map(({ t, need }) => (
+                          <div key={t} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontFamily: MONO, fontSize: 12, padding: "2px 0",
+                            color: t <= m.ss ? C.dim : C.bone }}>
+                            <span>SS {t}</span>
+                            <span>{need.map((x) => `${need.length > 1 ? x.label + " " : ""}${fmt(x)}`).join(" · ")}</span>
+                          </div>
+                        ))}
+                        <div style={{ fontSize: 11, color: C.dim, marginTop: 5, lineHeight: 1.45 }}>
+                          Raw exam % against VCAA's {GRADED_YEAR} distribution, with your coursework as it stands.
+                          {m.parts.some((p) => p.src === "rank") ? " Coursework comes from your rank." : " Coursework comes from your SAC marks (no valid rank)."}
                         </div>
                       </div>
                     );
@@ -960,10 +989,12 @@ function VCE({ state, setState }) {
       <Card style={{ borderColor: C.amber, padding: 14 }}>
         <Eyebrow>Where this gets shaky</Eyebrow>
         <div style={{ fontSize: 12.5, color: C.dim, lineHeight: 1.65 }}>
-          The aggregate arithmetic is exact. Everything feeding it is an estimate.
-          Your rank only sets your <em>moderated SAC</em> component — the exam is scored against the whole state and is
-          50–66% of every subject. Scaling is last year's curve, and the ATAR conversion is interpolated, so ±2.
-          Indonesian runs through VSL, not {SCHOOL.name}, so it's a different cohort entirely.
+          The aggregate and the ATAR lookup are exact for {VTAC_YEAR}. The study scores feeding them are estimates:
+          your rank only sets the <em>moderated SAC</em> part, the exam is 50–60% of every subject, and until you sit
+          it the model assumes you'll land a little closer to average than your SACs. Moderation is approximated from
+          {" "}{SCHOOL.name}'s median study score, not your actual class. Scaling and the ATAR table move each year,
+          so treat the result as ±2. Indonesian runs through VSL, not {SCHOOL.name}, and its cohort is small
+          (about 400 statewide), so its estimate swings more.
         </div>
       </Card>
     </div>
@@ -1320,7 +1351,11 @@ function Practice({ state, setState }) {
     }]);
     setOpen(id);
   };
-  const remove = (id) => { save(rows.filter((r) => r.id !== id)); setOpen(null); };
+  /* Deleting an attempt takes the key-knowledge evidence tagged from it too. */
+  const remove = (id) => {
+    setState({ ...state, practice: rows.filter((r) => r.id !== id), evidence: (state.evidence || []).filter((e) => e.practiceId !== id) });
+    setOpen(null);
+  };
 
   const shown = filter === "all" ? rows : rows.filter((r) => r.sub === filter);
   const sorted = [...shown].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
@@ -1355,13 +1390,20 @@ function Practice({ state, setState }) {
     return out;
   }, [rows, subs]);
 
+  /* Dot points where marks go, from tagged evidence: wrong counts 1, part marks ½. */
   const weakest = useMemo(() => {
-    const st = topicStats(state);
-    return (state.topics || [])
-      .map((tp) => ({ ...tp, ...(st[tp.id] || { seen: 0, errors: 0 }) }))
-      .filter((tp) => tp.errors > 0)
-      .sort((a, b) => b.errors - a.errors)
-      .slice(0, 6);
+    const byId = new Map((state.concepts || []).map((c) => [c.id, c]));
+    const agg = {};
+    for (const e of liveEvidence(state)) {
+      if (e.outcome === "correct") continue;
+      const a = (agg[e.concept] = agg[e.concept] || { lost: 0, papers: new Set() });
+      a.lost += e.outcome === "wrong" ? 1 : 0.5;
+      if (e.practiceId) a.papers.add(e.practiceId);
+    }
+    return Object.entries(agg)
+      .map(([id, a]) => ({ id, name: byId.get(id)?.name || id, sub: byId.get(id)?.sub, lost: a.lost, papers: a.papers.size }))
+      .sort((a, b) => b.lost - a.lost)
+      .slice(0, 8);
   }, [state]);
 
   const small = { ...inputStyle, padding: "6px 8px", fontSize: 12.5 };
@@ -1373,14 +1415,16 @@ function Practice({ state, setState }) {
           <Eyebrow>Where marks keep going</Eyebrow>
           {weakest.map((tp) => (
             <div key={tp.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "4px 0" }}>
-              <span style={{ fontSize: 12.5, color: C.bone, minWidth: 0 }}>{tp.name}</span>
+              <span style={{ fontSize: 12.5, color: C.bone, minWidth: 0 }}>
+                {tp.name} <span style={{ fontFamily: MONO, fontSize: 9.5, color: C.dim }}>{nameOf(tp.sub).toUpperCase()}</span>
+              </span>
               <span style={{ fontFamily: MONO, fontSize: 11.5, color: C.signal, flexShrink: 0 }}>
-                <strong>{tp.errors}</strong>× across {tp.seen} papers
+                <strong>{tp.lost}</strong>× lost{tp.papers > 0 && <> · {tp.papers} {tp.papers === 1 ? "paper" : "papers"}</>}
               </span>
             </div>
           ))}
           <div style={{ fontSize: 11.5, color: C.dim, marginTop: 8, lineHeight: 1.5 }}>
-            Built from your own marking, not from which papers you sat. This is the error log.
+            Built from the dot points you tagged ✗ or ½ on marked attempts, not from which papers you sat.
           </div>
         </Card>
       )}
@@ -1474,7 +1518,11 @@ function Practice({ state, setState }) {
                   {r.date && ` · ${parseKey(r.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" })}`}
                   {r.minutes && ` · ${fmtHM(r.minutes)}`}
                   {r.allowed && r.minutes && ` of ${fmtHM(r.allowed)}`}
-                  {(r.wrong || []).length > 0 && <span style={{ color: C.signal }}> · {r.wrong.length} weak {r.wrong.length === 1 ? "topic" : "topics"}</span>}
+                  {(() => {
+                    const ev = (state.evidence || []).filter((e) => e.practiceId === r.id);
+                    const lost = ev.filter((e) => e.outcome !== "correct").length;
+                    return ev.length > 0 && <span style={{ color: lost ? C.signal : C.moss }}> · {ev.length} tagged{lost > 0 && `, ${lost} lost`}</span>;
+                  })()}
                 </div>
               </button>
               <span style={{ fontFamily: MONO, fontSize: 9.5, color: mk.colour, border: `1px solid ${C.rule}`, borderRadius: 4, padding: "3px 7px", flexShrink: 0 }}>
@@ -1537,31 +1585,7 @@ function Practice({ state, setState }) {
                   </div>
                 </div>
 
-                <div>
-                  <div style={{ fontFamily: MONO, fontSize: 9.5, color: C.dim, letterSpacing: 1, marginBottom: 6 }}>
-                    WHICH TOPICS COST YOU MARKS?
-                  </div>
-                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                    {(state.topics || []).filter((tp) => tp.sub === r.sub).map((tp) => {
-                      const on = (r.wrong || []).includes(tp.id);
-                      return (
-                        <button key={tp.id} onClick={() => {
-                          const cur = r.wrong || [];
-                          patch(r.id, "wrong", on ? cur.filter((x) => x !== tp.id) : [...cur, tp.id]);
-                        }} style={{
-                          padding: "5px 9px", fontSize: 11.5, borderRadius: 6, cursor: "pointer", fontFamily: SANS,
-                          background: on ? "rgba(255,107,53,.16)" : C.plate2,
-                          color: on ? C.signal : C.dim,
-                          border: `1px solid ${on ? C.signal : C.rule}`,
-                          fontWeight: on ? 600 : 400, transition: "all .14s",
-                        }}>{tp.name}</button>
-                      );
-                    })}
-                  </div>
-                  <div style={{ fontSize: 11, color: C.dim, marginTop: 6, lineHeight: 1.45 }}>
-                    This is what drives the coverage bars. Leave it blank if you haven't marked the paper yet.
-                  </div>
-                </div>
+                <KKTagger state={state} setState={setState} row={r} />
 
                 <textarea value={r.note} onChange={(e) => patch(r.id, "note", e.target.value)}
                   rows={3} placeholder="What actually happened? Which questions cost you, what you'd do differently, anything you only half-marked."
@@ -1583,89 +1607,260 @@ function Practice({ state, setState }) {
   );
 }
 
-/* Exposure comes from ticked papers; the signal comes from where marks were lost.
-   A paper you sat is not a topic you hold. */
-function topicStats(state) {
+/* ============================== KEY KNOWLEDGE ============================== */
+/* Coverage is built from evidence: each marked attempt tags the dot points it
+   tested as ✓ got it, ½ part marks or ✗ lost marks. A paper you sat is not a
+   dot point you hold, so ticking papers alone never moves anything. */
+const LEVEL_COL = ["#252B36", "#C46830", "#F2B441", "#38D97E"];
+const OUTCOME = {
+  correct: { label: "✓", title: "Got it", col: "#38D97E" },
+  partial: { label: "½", title: "Part marks", col: "#F2B441" },
+  wrong: { label: "✗", title: "Lost marks", col: "#FF6B35" },
+};
+const NEXT_OUTCOME = { undefined: "correct", correct: "partial", partial: "wrong", wrong: null };
+const examTag = (e) => (e === 1 ? "E1" : e === 2 ? "E2" : e === "1/2" ? "E1·2" : null);
+const newEvId = () => "ev" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+/* Methods papers say which exam they are (Exam 1 is tech-free); everything else is null. */
+const examOfPaper = (sub, paper) =>
+  sub !== "mm" ? null : /exam\s*1|\bE1\b/i.test(paper || "") ? 1 : /exam\s*2|\bE2\b/i.test(paper || "") ? 2 : null;
+
+/* Evidence carrying its attempt's current date, source and marking, so editing an
+   attempt re-grades everything tagged from it. */
+function liveEvidence(state) {
+  const rows = new Map((state.practice || []).map((r) => [r.id, r]));
+  return (state.evidence || []).map((e) => {
+    const r = e.practiceId ? rows.get(e.practiceId) : null;
+    return r ? { ...e, date: r.date || e.date, source: r.source, marking: r.marking, exam: examOfPaper(r.sub, r.paper) } : e;
+  });
+}
+function statusMap(state) {
+  const by = {};
+  for (const e of liveEvidence(state)) (by[e.concept] = by[e.concept] || []).push(e);
   const out = {};
-  const papers = state.papers || [];
-  const prac = state.practice || [];
-  const topics = state.topics || [];
-  for (const t of topics) out[t.id] = { seen: 0, errors: 0, attempts: 0 };
-  for (const p of papers) {
-    if (!p.done) continue;
-    const covers = p.covers || topics.filter((t) => t.sub === p.sub).map((t) => t.id);
-    for (const id of covers) if (out[id]) out[id].seen++;
-  }
-  for (const a of prac) {
-    const subTopics = topics.filter((t) => t.sub === a.sub).map((t) => t.id);
-    for (const id of subTopics) if (out[id]) out[id].attempts++;
-    for (const id of (a.wrong || [])) if (out[id]) out[id].errors++;
+  for (const c of state.concepts || []) {
+    const st = conceptStatus(c, by[c.id] || []);
+    const o = state.kkOverride?.[c.id];
+    const overridden = o !== undefined && o !== null;
+    out[c.id] = { ...st, evidence: by[c.id] || [], auto: st.level, level: overridden ? o : st.level, overridden };
   }
   return out;
 }
 
-/* 0 Untouched · 1 Shaky · 2 Okay · 3 Solid */
-function autoConf(s) {
-  if (!s || s.seen === 0) return 0;
-  if (s.attempts === 0) return 1;              // seen but never marked against
-  const rate = s.errors / Math.max(1, s.attempts);
-  if (s.errors === 0 && s.seen >= 3) return 3;
-  if (rate <= 0.2) return 3;
-  if (rate <= 0.5) return 2;
-  return 1;
+/* Inside a practice attempt: tag what it tested. */
+function KKTagger({ state, setState, row }) {
+  const [area, setArea] = useState(null);
+  const concepts = (state.concepts || []).filter((c) => c.sub === row.sub && !c.retired).sort((a, b) => a.order - b.order);
+  const mine = new Map((state.evidence || []).filter((e) => e.practiceId === row.id).map((e) => [e.concept, e]));
+  const areas = [...new Set(concepts.map((c) => c.area))];
+  const legacy = (row.wrong || []).map((id) => (state.topics || []).find((t) => t.id === id)?.name).filter(Boolean);
+
+  const cycle = (c) => {
+    const cur = mine.get(c.id);
+    const next = NEXT_OUTCOME[cur?.outcome];
+    const all = state.evidence || [];
+    const evidence = !next ? all.filter((e) => e !== cur)
+      : cur ? all.map((e) => (e === cur ? { ...e, outcome: next } : e))
+      : [...all, { id: newEvId(), concept: c.id, practiceId: row.id, outcome: next, date: row.date,
+                   source: row.source, marking: row.marking, exam: examOfPaper(row.sub, row.paper), errorType: null, note: "" }];
+    setState({ ...state, evidence });
+  };
+
+  if (!concepts.length) return null;
+  return (
+    <div>
+      <div style={{ fontFamily: MONO, fontSize: 9.5, color: C.dim, letterSpacing: 1, marginBottom: 6 }}>
+        WHAT DID IT TEST? <span style={{ color: C.rule }}>·</span> {mine.size} TAGGED
+      </div>
+      {areas.map((a) => {
+        const list = concepts.filter((c) => c.area === a);
+        const tagged = list.filter((c) => mine.has(c.id));
+        const isOpen = area === a;
+        return (
+          <div key={a} style={{ marginBottom: 4 }}>
+            <button onClick={() => setArea(isOpen ? null : a)} style={{
+              width: "100%", display: "flex", justifyContent: "space-between", gap: 8, background: C.plate2,
+              border: `1px solid ${C.rule}`, borderRadius: 6, padding: "6px 9px", cursor: "pointer", color: C.bone, fontFamily: SANS, fontSize: 12,
+            }}>
+              <span style={{ textAlign: "left" }}>{a}</span>
+              <span style={{ fontFamily: MONO, fontSize: 11, flexShrink: 0 }}>
+                {tagged.map((c) => <span key={c.id} style={{ color: OUTCOME[mine.get(c.id).outcome].col }}>{OUTCOME[mine.get(c.id).outcome].label}</span>)}
+                <span style={{ color: C.dim, marginLeft: 6 }}>{isOpen ? "▴" : "▾"}</span>
+              </span>
+            </button>
+            {isOpen && (
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap", padding: "7px 0 3px" }}>
+                {list.map((c) => {
+                  const o = mine.get(c.id)?.outcome;
+                  const col = o ? OUTCOME[o].col : null;
+                  return (
+                    <button key={c.id} onClick={() => cycle(c)} title={o ? OUTCOME[o].title : "Not tagged"} style={{
+                      padding: "5px 9px", fontSize: 11.5, borderRadius: 6, cursor: "pointer", fontFamily: SANS, textAlign: "left",
+                      background: o ? col + "22" : C.plate2, color: o ? col : C.dim,
+                      border: `1px solid ${o ? col : C.rule}`, fontWeight: o ? 600 : 400, transition: "all .14s",
+                    }}>
+                      {o && <span style={{ fontFamily: MONO, marginRight: 5 }}>{OUTCOME[o].label}</span>}{c.name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      <div style={{ fontSize: 11, color: C.dim, marginTop: 6, lineHeight: 1.45 }}>
+        Tap a dot point to cycle ✓ got it → ½ part marks → ✗ lost marks → clear. Only tag what the paper actually tested;
+        this is what drives key knowledge coverage.
+        {legacy.length > 0 && <><br />Older topic tags on this attempt: {legacy.join(", ")}.</>}
+      </div>
+    </div>
+  );
+}
+
+/* In the paper library: where each dot point stands, and what Solid still needs. */
+function KnowledgeCoverage({ state, setState, subId, status }) {
+  const [area, setArea] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const concepts = (state.concepts || []).filter((c) => c.sub === subId && !c.retired).sort((a, b) => a.order - b.order);
+  if (!concepts.length) return null;
+  const areas = [...new Set(concepts.map((c) => c.area))];
+  const lv = (c) => status[c.id]?.level ?? 0;
+  const count = (list, pred) => list.filter(pred).length;
+
+  const setOverride = (id, v) => {
+    const o = { ...(state.kkOverride || {}) };
+    if (v === null) delete o[id]; else o[id] = v;
+    setState({ ...state, kkOverride: o });
+  };
+  const quickLog = (c, outcome) => setState({
+    ...state,
+    evidence: [...(state.evidence || []), { id: newEvId(), concept: c.id, practiceId: null, outcome, date: key(new Date()),
+      source: "Quick log", marking: "self", exam: null, errorType: null, note: "" }],
+  });
+  const dropEv = (id) => setState({ ...state, evidence: (state.evidence || []).filter((e) => e.id !== id) });
+  const paperName = (id) => (state.practice || []).find((r) => r.id === id);
+
+  return (
+    <div style={{ borderTop: `1px solid ${C.rule}`, paddingTop: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 9 }}>
+        <span style={{ fontFamily: MONO, fontSize: 10, letterSpacing: 1.2, color: C.dim }}>KEY KNOWLEDGE · {concepts.length} DOT POINTS</span>
+        <span style={{ fontFamily: MONO, fontSize: 11, color: C.dim }}>
+          <strong style={{ color: LEVEL_COL[3] }}>{count(concepts, (c) => lv(c) === 3)}</strong> solid ·{" "}
+          <strong style={{ color: C.bone }}>{count(concepts, (c) => lv(c) >= 2)}</strong> okay+ ·{" "}
+          <strong style={{ color: C.signal }}>{count(concepts, (c) => lv(c) === 0)}</strong> untouched
+        </span>
+      </div>
+
+      {areas.map((a) => {
+        const list = concepts.filter((c) => c.area === a);
+        const isOpen = area === a;
+        return (
+          <div key={a} style={{ marginBottom: 5 }}>
+            <button onClick={() => { setArea(isOpen ? null : a); setDetail(null); }} style={{
+              width: "100%", background: "none", border: "none", padding: "4px 0", cursor: "pointer", textAlign: "left",
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+                <span style={{ fontSize: 12.5, color: C.bone, fontFamily: SANS }}>{a}</span>
+                <span style={{ fontFamily: MONO, fontSize: 10.5, color: C.dim, flexShrink: 0 }}>
+                  {count(list, (c) => lv(c) >= 2)}/{list.length} {isOpen ? "▴" : "▾"}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 2 }}>
+                {list.map((c) => (
+                  <div key={c.id} style={{ flex: 1, height: 5, borderRadius: 1.5, background: lv(c) ? LEVEL_COL[lv(c)] : C.plate2 }} />
+                ))}
+              </div>
+            </button>
+
+            {isOpen && list.map((c) => {
+              const st = status[c.id] || { level: 0, n: 0, missing: [] };
+              const l = st.level;
+              const isDetail = detail === c.id;
+              return (
+                <div key={c.id} style={{ padding: "6px 0 6px 8px", borderLeft: `2px solid ${LEVEL_COL[l]}`, margin: "5px 0" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <button onClick={() => setDetail(isDetail ? null : c.id)} style={{ flex: 1, minWidth: 0, background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
+                      <div style={{ fontSize: 12.5, fontFamily: SANS, color: l >= 2 ? C.bone : C.dim, fontWeight: l >= 3 ? 600 : 400 }}>
+                        {c.name}
+                        {examTag(c.exam) && <span style={{ fontFamily: MONO, fontSize: 9, color: C.steel, marginLeft: 6 }}>{examTag(c.exam)}</span>}
+                      </div>
+                      <div style={{ fontFamily: MONO, fontSize: 9.5, color: C.dim, marginTop: 1 }}>
+                        {st.n ? <>
+                          {st.n} {st.n === 1 ? "attempt" : "attempts"} · <span style={{ color: OUTCOME.correct.col }}>{st.correct}✓</span>
+                          {st.partial > 0 && <> <span style={{ color: OUTCOME.partial.col }}>{st.partial}½</span></>}
+                          {st.wrong > 0 && <> <span style={{ color: OUTCOME.wrong.col }}>{st.wrong}✗</span></>}
+                          {" "}· last {st.age === 0 ? "today" : `${st.age}d ago`}
+                        </> : "no attempts yet"}
+                        {st.overridden && <span style={{ color: C.steel }}> · your rating (auto: {LEVELS[st.auto].toLowerCase()})</span>}
+                      </div>
+                    </button>
+                    <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+                      {LEVELS.map((lbl, i) => (
+                        <button key={i} onClick={() => setOverride(c.id, i)} title={`Rate it ${lbl}`} style={{
+                          width: 18, height: 13, borderRadius: 3, cursor: "pointer", padding: 0,
+                          background: l >= i && i > 0 ? LEVEL_COL[l] : C.plate2,
+                          border: `1px solid ${l === i ? C.bone : C.rule}`, transition: "all .14s",
+                        }} />
+                      ))}
+                    </div>
+                    <span style={{ fontFamily: MONO, fontSize: 9, color: LEVEL_COL[l] === LEVEL_COL[0] ? C.dim : LEVEL_COL[l], width: 52, textAlign: "right", flexShrink: 0 }}>
+                      {LEVELS[l].toUpperCase()}
+                    </span>
+                    {st.overridden && (
+                      <button onClick={() => setOverride(c.id, null)} title="Back to computed" style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", padding: 0, flexShrink: 0 }}>
+                        <X size={11} />
+                      </button>
+                    )}
+                  </div>
+
+                  {isDetail && (
+                    <div style={{ marginTop: 7, fontSize: 11.5, color: C.dim, lineHeight: 1.5 }}>
+                      {st.auto === 3
+                        ? <div style={{ color: OUTCOME.correct.col }}>Meets the Solid rule.</div>
+                        : <div>For Solid it still needs: <span style={{ color: C.bone }}>{(st.missing || []).join("; ")}</span>.</div>}
+                      <div style={{ display: "flex", gap: 5, alignItems: "center", margin: "6px 0", flexWrap: "wrap" }}>
+                        <span>Log a question:</span>
+                        {Object.entries(OUTCOME).map(([k, o]) => (
+                          <button key={k} onClick={() => quickLog(c, k)} title={o.title} style={{
+                            background: C.plate2, border: `1px solid ${o.col}`, color: o.col, borderRadius: 5,
+                            padding: "2px 9px", cursor: "pointer", fontFamily: MONO, fontSize: 12,
+                          }}>{o.label}</button>
+                        ))}
+                      </div>
+                      {(st.evidence || []).slice().reverse().map((e) => {
+                        const r = e.practiceId ? paperName(e.practiceId) : null;
+                        return (
+                          <div key={e.id} style={{ display: "flex", gap: 7, alignItems: "center", fontFamily: MONO, fontSize: 10.5 }}>
+                            <span style={{ color: OUTCOME[e.outcome]?.col, width: 12 }}>{OUTCOME[e.outcome]?.label}</span>
+                            <span style={{ flex: 1, minWidth: 0 }}>
+                              {e.date ? parseKey(e.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : "—"} · {r ? `${r.source} ${r.paper}` : e.source}
+                              {e.exam && ` · E${e.exam}`} · {e.marking}
+                            </span>
+                            <button onClick={() => dropEv(e.id)} title="Remove this record" style={{ background: "none", border: "none", color: C.rule, cursor: "pointer", padding: 0 }}>
+                              <X size={10} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+      <div style={{ fontSize: 11, color: C.dim, marginTop: 8, lineHeight: 1.5 }}>
+        Solid = {SOLID_RULE.correct}+ correct from {SOLID_RULE.sources}+ sources, latest attempt correct, last correct within {SOLID_RULE.days} days
+        {subId === "mm" && ", and one correct tech-free for anything on Exam 1"}. Teacher-marked attempts count most, self-marked least.
+        Tap a dot point for its history; tap the bars to rate it yourself.
+      </div>
+    </div>
+  );
 }
 
 /* ============================== PAPER LIBRARY ============================== */
-/* Study-design accreditation, checked against VCAA:
-     Maths Methods      2023-2027  -> VCAA 2023+ current
-     Physics            U3&4 from 2024 -> VCAA 2024+ current
-     English            U3&4 from 2024 -> VCAA 2024+ current
-     Indonesian SL      2023-2027  -> VCAA 2023+ current
-     Software Dev       U3&4 from 2025 -> VCAA 2025 only
-   Everything below is editable — verify against vcaa.vic.edu.au before relying on it. */
-
-const P = (sub, provider, name, year, current) =>
-  ({ id: `${sub}-${provider}-${name}`.replace(/\s+/g, "_").toLowerCase(), sub, provider, name, year, current, done: false });
-
-const SEED_PAPERS = [
-  // ---- Maths Methods : VCAA current from 2023
-  ...[2025, 2024, 2023].flatMap((y) => [P("mm","VCAA",`${y} Exam 1`,y,true), P("mm","VCAA",`${y} Exam 2`,y,true)]),
-  ...[2022, 2021, 2020, 2019].flatMap((y) => [P("mm","VCAA",`${y} Exam 1`,y,false), P("mm","VCAA",`${y} Exam 2`,y,false)]),
-  P("mm","Heffernan","Exam 1 — Trial A",null,true), P("mm","Heffernan","Exam 2 — Trial A",null,true),
-  P("mm","Heffernan","Exam 1 — Trial B",null,true), P("mm","Heffernan","Exam 2 — Trial B",null,true),
-  P("mm","Fundamental","Exam 1 — Trial",null,true), P("mm","Fundamental","Exam 2 — Trial",null,true),
-  P("mm","NEAP","Trial Exam 1",null,true), P("mm","NEAP","Trial Exam 2",null,true),
-  P("mm","MAV","Trial Exam 1",null,true), P("mm","MAV","Trial Exam 2",null,true),
-  P("mm","Checkpoints","Topic sets",null,true),
-
-  // ---- Physics : VCAA current from 2024
-  ...[2025, 2024].map((y) => P("phy","VCAA",`${y} exam`,y,true)),
-  ...[2023, 2022, 2021, 2019].map((y) => P("phy","VCAA",`${y} exam`,y,false)),
-  P("phy","Heffernan","Trial exam",null,true),
-  P("phy","NEAP","Trial exam",null,true),
-  P("phy","Checkpoints","Topic sets",null,true),
-  P("phy","STAV","Trial exam",null,true),
-
-  // ---- English : VCAA current from 2024
-  ...[2025, 2024].map((y) => P("eng","VCAA",`${y} exam`,y,true)),
-  ...[2023, 2022, 2021].map((y) => P("eng","VCAA",`${y} exam`,y,false)),
-  P("eng","Insight","Trial exam",null,true),
-  P("eng","NEAP","Trial exam",null,true),
-  P("eng","School","Practice exam",null,true),
-
-  // ---- Software Development : new study design, U3&4 from 2025
-  P("sd","VCAA","2025 exam",2025,true),
-  ...[2024, 2023, 2022, 2021, 2020, 2019, 2018].map((y) => P("sd","VCAA",`${y} exam (old design)`,y,false)),
-  P("sd","NEAP","Trial exam",null,true),
-  P("sd","TSSM","Trial exam",null,true),
-
-  // ---- Indonesian Second Language : current from 2023
-  ...[2025, 2024, 2023].map((y) => P("indo","VCAA",`${y} written exam`,y,true)),
-  ...[2022, 2021, 2019].map((y) => P("indo","VCAA",`${y} written exam`,y,false)),
-  P("indo","VCAA","Oral exam — sample topics",null,true),
-  P("indo","VSL","Practice written",null,true),
-  P("indo","VSL","Practice oral",null,true),
-];
+/* The paper list (SEED_PAPERS) and the study-design periods behind it are in lib/vcaa.js. */
 
 const T = (sub, name) => ({ id: `${sub}-${name}`.replace(/\s+/g,"_").toLowerCase(), sub, name, conf: 0 });
 const SEED_TOPICS = [
@@ -1684,8 +1879,6 @@ const SEED_TOPICS = [
       "Text types & register","Grammar & vocabulary range","Culture & prescribed sub-topics"].map((n) => T("indo", n)),
 ];
 
-const CONF = ["Untouched", "Shaky", "Okay", "Solid"];
-const CONF_COL = ["#252B36", "#C46830", "#F2B441", "#38D97E"];
 
 function Papers({ state, setState }) {
   const [filter, setFilter] = useState("all");
@@ -1693,7 +1886,6 @@ function Papers({ state, setState }) {
 
   const subs = state.vce?.subjects?.filter((s) => !s.completed) || [];
   const papers = state.papers || [];
-  const topics = state.topics || [];
   const nameOf = (id) => subs.find((s) => s.id === id)?.name || id;
 
   const setPapers = (n) => setState({ ...state, papers: n });
@@ -1704,18 +1896,12 @@ function Papers({ state, setState }) {
     id: "pp" + Date.now(), sub, provider: "Other", name: "New paper", year: null, current: true, done: false,
   }]);
 
-  const stats = useMemo(() => topicStats(state), [state.papers, state.practice, state.topics]);
-  const setConf = (id, v) => setState({
-    ...state,
-    topics: topics.map((t) => t.id === id ? { ...t, conf: v, manual: v !== null } : t),
-  });
-  const confOf = (t) => (t.manual && t.conf !== null && t.conf !== undefined) ? t.conf : autoConf(stats[t.id]);
-
+  const status = useMemo(() => statusMap(state), [state.concepts, state.evidence, state.practice, state.kkOverride]);
   /* send a ticked paper straight into the practice log */
   const logIt = (p) => {
     const row = {
       id: "p" + Date.now(), sub: p.sub, source: p.provider, paper: p.name,
-      date: key(new Date()), mark: null, total: null, minutes: null, allowed: null,
+      date: key(new Date()), mark: null, total: p.marks ?? null, minutes: null, allowed: p.mins ?? null,
       marking: "unmarked", note: "",
     };
     setState({
@@ -1760,8 +1946,6 @@ function Papers({ state, setState }) {
         const st = statsFor(s.id);
         const mine = papers.filter((p) => p.sub === s.id && (!hideOld || p.current));
         const byProv = mine.reduce((a, p) => { (a[p.provider] = a[p.provider] || []).push(p); return a; }, {});
-        const myTopics = topics.filter((t) => t.sub === s.id);
-        const covered = myTopics.filter((t) => confOf(t) >= 2).length;
         const pct = st.curTotal ? st.curDone / st.curTotal : 0;
 
         return (
@@ -1827,49 +2011,7 @@ function Papers({ state, setState }) {
               <Plus size={11} /> Add paper
             </Btn>
 
-            {/* topic coverage */}
-            <div style={{ borderTop: `1px solid ${C.rule}`, paddingTop: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 9 }}>
-                <span style={{ fontFamily: MONO, fontSize: 10, letterSpacing: 1.2, color: C.dim }}>KEY KNOWLEDGE COVERAGE</span>
-                <span style={{ fontFamily: MONO, fontSize: 11.5, color: C.dim }}>
-                  <strong style={{ color: covered === myTopics.length ? C.moss : C.bone }}>{covered}</strong>/{myTopics.length} at okay or better
-                </span>
-              </div>
-              {myTopics.map((t) => {
-                const st = stats[t.id] || { seen: 0, errors: 0, attempts: 0 };
-                const c = confOf(t);
-                return (
-                  <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 0" }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12.5, color: c >= 2 ? C.bone : C.dim, fontWeight: c >= 3 ? 600 : 400 }}>{t.name}</div>
-                      <div style={{ fontFamily: MONO, fontSize: 9.5, color: C.dim, marginTop: 1 }}>
-                        seen <strong style={{ color: st.seen ? C.bone : C.rule }}>{st.seen}</strong>
-                        {st.errors > 0 && <> · cost marks <strong style={{ color: C.signal }}>{st.errors}</strong>×</>}
-                        {!t.manual && <span style={{ color: C.steel }}> · auto</span>}
-                      </div>
-                    </div>
-                    <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
-                      {CONF.map((lbl, i) => (
-                        <button key={i} onClick={() => setConf(t.id, i)} title={lbl} style={{
-                          width: 22, height: 15, borderRadius: 3, cursor: "pointer",
-                          background: c >= i && i > 0 ? CONF_COL[c] : C.plate2,
-                          border: `1px solid ${c === i ? C.bone : C.rule}`, padding: 0, transition: "all .14s",
-                        }} />
-                      ))}
-                    </div>
-                    <span style={{ fontFamily: MONO, fontSize: 9.5, color: CONF_COL[c], flexShrink: 0, width: 58, textAlign: "right" }}>
-                      {CONF[c].toUpperCase()}
-                    </span>
-                    {t.manual && (
-                      <button onClick={() => setState({ ...state, topics: topics.map((x) => x.id === t.id ? { ...x, manual: false } : x) })}
-                        title="Back to auto" style={{ background: "none", border: "none", color: C.rule, cursor: "pointer", padding: 0, flexShrink: 0 }}>
-                        <X size={11} />
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            <KnowledgeCoverage state={state} setState={setState} subId={s.id} status={status} />
           </Card>
         );
       })}
@@ -1877,15 +2019,16 @@ function Papers({ state, setState }) {
       <Card style={{ borderColor: C.amber }}>
         <Eyebrow>Before you trust this list</Eyebrow>
         <div style={{ fontSize: 12.5, color: C.dim, lineHeight: 1.65 }}>
-          Study-design periods are checked against VCAA: <strong style={{ color: C.bone }}>Methods 2023–2027</strong>,
+          The VCAA papers are every one listed on each subject's past-exams page (checked September 2026), including
+          the NHT (Northern Hemisphere Timetable) sittings and sample exams. Study designs: <strong style={{ color: C.bone }}>Methods 2023–2027</strong>,
           <strong style={{ color: C.bone }}> Physics and English Units 3&4 from 2024</strong>,
-          <strong style={{ color: C.bone }}> Indonesian 2023–2027</strong>, and
-          <strong style={{ color: C.bone }}> Software Development Units 3&4 from 2025</strong> — which is why only the
-          2025 Software paper is marked current.
+          <strong style={{ color: C.bone }}> Indonesian SL Units 3&4 from 2020</strong>, and
+          <strong style={{ color: C.bone }}> Software Development Units 3&4 from 2025</strong>. VCAA files the 2024 NHT
+          Physics and English papers under the previous design, and NHT stopped after 2024 for English.
           <br /><br />
-          Older papers still build skills, they just won't match the current format. Commercial trial papers are listed
-          generically because availability changes each year — rename them to whatever you actually have.
-          Check the VCAA past exams page for the definitive list.
+          Logging a paper fills in its marks and time allowed from the VCAA exam specifications. Older papers still build
+          skills; they just won't match the current format. Commercial trials are generic because they change each
+          year, so rename them to what you actually have.
         </div>
       </Card>
     </div>
@@ -2269,20 +2412,26 @@ function BodyTab({ state, setState, todayKey }) {
 }
 
 /* ============================== BACKUP ============================== */
-function Backup({ state, setState, storageOk, saveStatus, exportData }) {
+function Backup({ state, setState, storageOk, saveStatus, exportData, loadError }) {
   const [paste, setPaste] = useState("");
   const [msg, setMsg] = useState(null);
   const json = useMemo(() => JSON.stringify(state), [state]);
 
+  /* Same path as a load, so an older backup comes back in the current shape. */
   const restore = () => {
+    let parsed;
     try {
-      const parsed = JSON.parse(paste);
-      if (!parsed.days) throw new Error("no days");
-      if (!parsed.vce) parsed.vce = SEED_VCE;
-      setState(parsed);
-      setMsg({ ok: true, text: `Restored ${Object.keys(parsed.days).length} days.` });
+      parsed = JSON.parse(paste);
+      if (!parsed || !parsed.days) throw new Error();
+    } catch { setMsg({ ok: false, text: "That isn't valid backup JSON." }); return; }
+    try {
+      const { updatedAt, ...rest } = parsed;
+      const next = migrate(withDefaults(rest));
+      const had = (state.evidence || []).length;
+      setState(next);
+      setMsg({ ok: true, text: `Restored ${Object.keys(next.days).length} days · ${next.evidence.length} evidence records (was ${had}).` });
       setPaste("");
-    } catch { setMsg({ ok: false, text: "That isn't valid backup JSON." }); }
+    } catch (e) { setMsg({ ok: false, text: `Can't restore this backup: ${e.message}` }); }
   };
 
   const copyOut = async () => {
@@ -2302,10 +2451,12 @@ function Backup({ state, setState, storageOk, saveStatus, exportData }) {
       <Card style={{ borderColor: storageOk ? C.moss : C.signal }}>
         <Eyebrow>Persistence check</Eyebrow>
         <div style={{ fontSize: 14, color: storageOk ? C.moss : C.signal, fontWeight: 600, marginBottom: 6 }}>
-          {storageOk === null ? "Connecting…" : storageOk ? "Synced to your account" : "Not syncing — check your connection"}
+          {loadError ? "Saving is off — your data didn't load" : storageOk === null ? "Connecting…" : storageOk ? "Synced to your account" : "Not syncing — check your connection"}
         </div>
         <div style={{ fontSize: 12.5, color: C.dim, lineHeight: 1.6 }}>
-          {storageOk
+          {loadError
+            ? "What you see is placeholder data. Nothing is being saved, so your real data on the server is untouched. Use Retry in the banner above."
+            : storageOk
             ? `Last action: ${saveStatus}. Saved against your account, so every signed-in device sees the same data. Export monthly anyway.`
             : "Changes are staying on this device only. Export a backup before closing, then check your connection."}
         </div>
@@ -2343,6 +2494,51 @@ function Backup({ state, setState, storageOk, saveStatus, exportData }) {
   );
 }
 
+/* Fill in any section an older blob or backup is missing. Only adds keys. */
+function withDefaults(s) {
+  const base = { ...s };
+  if (!base.vce) base.vce = SEED_VCE;
+  if (!base.atlas) base.atlas = SEED_PROGRESS;
+  if (!base.practice) base.practice = SEED_PRACTICE;
+  if (!base.papers) base.papers = SEED_PAPERS;
+  if (!base.lifts) base.lifts = SEED_LIFTS;
+  if (!base.body) base.body = SEED_BODY;
+  if (!base.profile) base.profile = { height: 183, weight: 70, sex: "m", activity: 1.55, goal: "lean" };
+  if (!base.food) base.food = {};
+  if (!base.topics) base.topics = SEED_TOPICS;
+  return base;
+}
+
+/* Loud, not silent: shown above every tab while saving is off or another device has written. */
+function SyncBanner({ loadError, stale, onRetry, onDismiss }) {
+  if (!loadError && !stale) return null;
+  const col = loadError ? C.signal : C.amber;
+  return (
+    <div role="alert" style={{ display: "flex", gap: 10, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 14,
+      padding: "11px 13px", borderRadius: 9, border: `1px solid ${col}`, background: C.plate }}>
+      <AlertTriangle size={17} color={col} style={{ flexShrink: 0, marginTop: 1 }} />
+      <div style={{ flex: "1 1 260px", minWidth: 0, fontSize: 13, lineHeight: 1.5 }}>
+        {loadError ? (<>
+          <strong style={{ color: col }}>Saving is off.</strong> Couldn't load your data from the server, so this is
+          placeholder data. Nothing you change here will be saved, which means it can't overwrite your real data.
+          <div style={{ fontFamily: MONO, fontSize: 11, color: C.dim, marginTop: 4, overflowWrap: "anywhere" }}>{loadError}</div>
+        </>) : stale.overwritten ? (<>
+          <strong style={{ color: col }}>Another device saved while this tab was open.</strong> This tab has since saved
+          over it. Reload and check that nothing you did on the other device is missing.
+        </>) : (<>
+          <strong style={{ color: col }}>Another device has saved newer data.</strong> Reload before editing here,
+          or this tab will save over it.
+        </>)}
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        {loadError
+          ? <Btn onClick={onRetry} active>Retry</Btn>
+          : <><Btn onClick={() => window.location.reload()} active>Reload</Btn><Btn onClick={onDismiss}>Dismiss</Btn></>}
+      </div>
+    </div>
+  );
+}
+
 /* ============================== ROOT ============================== */
 export default function LifeOS({ user }) {
   const [state, setState] = useState(null);
@@ -2350,41 +2546,70 @@ export default function LifeOS({ user }) {
   const [offset, setOffset] = useState(0);
   const [storageOk, setStorageOk] = useState(null);
   const [saveStatus, setSaveStatus] = useState("idle");
+  const [loadError, setLoadError] = useState(null);   // set => saving is blocked
+  const [stale, setStale] = useState(null);           // another device wrote since we loaded/saved
+  const [loadTry, setLoadTry] = useState(0);
   const first = useRef(true);
+  const stamp = useRef(null);                         // updatedAt this tab last loaded or saved
+  const queue = useRef(Promise.resolve());            // saves and stamp checks run one at a time
 
   useEffect(() => {
     (async () => {
       try {
         const remote = await loadRemote(user.id);
-        const base = remote || SEED;
-        if (!base.vce) base.vce = SEED_VCE;
-        if (!base.atlas) base.atlas = SEED_PROGRESS;
-        if (!base.practice) base.practice = SEED_PRACTICE;
-        if (!base.papers) base.papers = SEED_PAPERS;
-        if (!base.lifts) base.lifts = SEED_LIFTS;
-        if (!base.body) base.body = SEED_BODY;
-        if (!base.profile) base.profile = { height: 183, weight: 70, sex: "m", activity: 1.55, goal: "lean" };
-        if (!base.food) base.food = {};
-        if (!base.topics) base.topics = SEED_TOPICS;
-        setState(base);
+        const { updatedAt = null, ...base } = remote || SEED;
+        const next = migrate(withDefaults(base));
+        stamp.current = updatedAt;
+        first.current = true;
+        setState(next);
+        setLoadError(null);
+        setStale(null);
         setStorageOk(true);
       } catch (e) {
-        setState(SEED);
+        /* Never let a failed load become an overwrite: show seed data, but don't save it. */
+        setState((s) => s || withDefaults(SEED));
+        setLoadError(e?.message || String(e));
         setStorageOk(false);
       }
     })();
-  }, [user.id]);
+  }, [user.id, loadTry]);
 
   useEffect(() => {
-    if (!state || storageOk === null) return;
+    if (!state || storageOk === null || loadError) return;
     if (first.current) { first.current = false; return; }
     setSaveStatus("saving");
-    const t = setTimeout(async () => {
-      try { await saveRemote(user.id, state); setSaveStatus("saved"); setStorageOk(true); }
-      catch { setSaveStatus("failed"); setStorageOk(false); }
+    const t = setTimeout(() => {
+      queue.current = queue.current.then(async () => {
+        try {
+          const r = await saveRemote(user.id, state, stamp.current);
+          stamp.current = r.updatedAt;
+          if (r.conflict) setStale({ overwritten: true });
+          setSaveStatus("saved"); setStorageOk(true);
+        } catch { setSaveStatus("failed"); setStorageOk(false); }
+      });
     }, 700);
     return () => clearTimeout(t);
-  }, [state, storageOk, user.id]);
+  }, [state, storageOk, loadError, user.id]);
+
+  /* Coming back to this tab (phone <-> PC): warn if the server moved on without us. */
+  useEffect(() => {
+    if (loadError) return;
+    const check = () => {
+      if (document.visibilityState !== "visible") return;
+      queue.current = queue.current.then(async () => {
+        try {
+          const s = await remoteStamp(user.id);
+          if (s && s !== stamp.current) setStale({ overwritten: false });
+        } catch {}
+      });
+    };
+    document.addEventListener("visibilitychange", check);
+    window.addEventListener("focus", check);
+    return () => {
+      document.removeEventListener("visibilitychange", check);
+      window.removeEventListener("focus", check);
+    };
+  }, [user.id, loadError]);
 
   const exportData = () => {
     try {
@@ -2441,6 +2666,13 @@ export default function LifeOS({ user }) {
               x.name.toLowerCase().includes((a.name || "").toLowerCase()) && (a.name || "").length > 2
                 ? { ...x, mark: a.mark ?? x.mark, total: a.total ?? x.total } : x);
           });
+        } else if (a.type === "set_exam_mark") {
+          const su = sub(a.subjectId); if (!su) return;
+          const n = (a.name || "").toLowerCase();
+          const i = su.exams.length === 1 ? 0
+            : su.exams.findIndex((x) => x.name.toLowerCase() === n || (n.length > 2 && x.name.toLowerCase().includes(n)));
+          if (i < 0) return;
+          su.exams[i] = { ...su.exams[i], mark: a.mark ?? su.exams[i].mark, total: a.total ?? su.exams[i].total };
         } else if (a.type === "log_time") {
           const d = today();
           const f = a.field === "dev" ? "dev" : "study";
@@ -2502,12 +2734,15 @@ export default function LifeOS({ user }) {
               fontFamily: MONO, fontSize: 9.5, letterSpacing: .8, cursor: "pointer", marginRight: 6,
               padding: "4px 8px", borderRadius: 6, border: `1px solid ${storageOk === false ? C.signal : C.rule}`,
               color: storageOk === false ? C.signal : saveStatus === "saved" ? C.moss : C.dim,
-            }}>{storageOk === false ? "NOT SAVING" : saveStatus === "saving" ? "SAVING…" : saveStatus === "saved" ? "SAVED" : "READY"}</span>
+            }}>{loadError ? "SAVING OFF" : storageOk === false ? "NOT SAVING" : saveStatus === "saving" ? "SAVING…" : saveStatus === "saved" ? "SAVED" : "READY"}</span>
             <Btn onClick={() => setOffset(offset - 1)}><ChevronLeft size={15} /></Btn>
             <Btn onClick={() => setOffset(0)} active={offset === 0}>Today</Btn>
             <Btn onClick={() => setOffset(Math.min(0, offset + 1))} style={{ opacity: offset >= 0 ? .35 : 1 }}><ChevronRight size={15} /></Btn>
           </div>
         </div>
+
+        <SyncBanner loadError={loadError} stale={stale}
+          onRetry={() => setLoadTry((n) => n + 1)} onDismiss={() => setStale(null)} />
 
         <div style={{ display: "flex", gap: 2, marginBottom: 14, borderBottom: `1px solid ${C.rule}`, overflowX: "auto" }}>
           {TABS.map((t) => {
@@ -2529,7 +2764,7 @@ export default function LifeOS({ user }) {
         {tab === "log" && <Log state={state} />}
         {tab === "gym" && <BodyTab state={state} setState={setState} todayKey={vk} />}
         {tab === "atlas" && <Atlas progress={state.atlas || SEED_PROGRESS} setProgress={(p) => setState({ ...state, atlas: p })} />}
-        {tab === "backup" && <Backup state={state} setState={setState} storageOk={storageOk} saveStatus={saveStatus} exportData={exportData} />}
+        {tab === "backup" && <Backup state={state} setState={setState} storageOk={storageOk} saveStatus={saveStatus} exportData={exportData} loadError={loadError} />}
       </div>
     </div>
   );
