@@ -2509,32 +2509,26 @@ function withDefaults(s) {
   return base;
 }
 
-/* Loud, not silent: shown above every tab while saving is off or another device has written. */
-function SyncBanner({ loadError, stale, onRetry, onDismiss }) {
+/* Loud, not silent: shown above every tab while saving is off. */
+function SyncBanner({ loadError, stale, onRetry }) {
   if (!loadError && !stale) return null;
-  const col = loadError ? C.signal : C.amber;
   return (
     <div role="alert" style={{ display: "flex", gap: 10, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 14,
-      padding: "11px 13px", borderRadius: 9, border: `1px solid ${col}`, background: C.plate }}>
-      <AlertTriangle size={17} color={col} style={{ flexShrink: 0, marginTop: 1 }} />
+      padding: "11px 13px", borderRadius: 9, border: `1px solid ${C.signal}`, background: C.plate }}>
+      <AlertTriangle size={17} color={C.signal} style={{ flexShrink: 0, marginTop: 1 }} />
       <div style={{ flex: "1 1 260px", minWidth: 0, fontSize: 13, lineHeight: 1.5 }}>
         {loadError ? (<>
-          <strong style={{ color: col }}>Saving is off.</strong> Couldn't load your data from the server, so this is
+          <strong style={{ color: C.signal }}>Saving is off.</strong> Couldn't load your data from the server, so this is
           placeholder data. Nothing you change here will be saved, which means it can't overwrite your real data.
           <div style={{ fontFamily: MONO, fontSize: 11, color: C.dim, marginTop: 4, overflowWrap: "anywhere" }}>{loadError}</div>
-        </>) : stale.overwritten ? (<>
-          <strong style={{ color: col }}>Another device saved while this tab was open.</strong> This tab has since saved
-          over it. Reload and check that nothing you did on the other device is missing.
         </>) : (<>
-          <strong style={{ color: col }}>Another device has saved newer data.</strong> Reload before editing here,
-          or this tab will save over it.
+          <strong style={{ color: C.signal }}>This page is out of date.</strong> Another device has saved newer data, so
+          this page has stopped saving to protect it. Reload to get the latest, then redo anything you just changed.
         </>)}
       </div>
-      <div style={{ display: "flex", gap: 6 }}>
-        {loadError
-          ? <Btn onClick={onRetry} active>Retry</Btn>
-          : <><Btn onClick={() => window.location.reload()} active>Reload</Btn><Btn onClick={onDismiss}>Dismiss</Btn></>}
-      </div>
+      {loadError
+        ? <Btn onClick={onRetry} active>Retry</Btn>
+        : <Btn onClick={() => window.location.reload()} active>Reload</Btn>}
     </div>
   );
 }
@@ -2547,7 +2541,7 @@ export default function LifeOS({ user }) {
   const [storageOk, setStorageOk] = useState(null);
   const [saveStatus, setSaveStatus] = useState("idle");
   const [loadError, setLoadError] = useState(null);   // set => saving is blocked
-  const [stale, setStale] = useState(null);           // another device wrote since we loaded/saved
+  const [stale, setStale] = useState(false);          // another device wrote => saving is blocked
   const [loadTry, setLoadTry] = useState(0);
   const first = useRef(true);
   const stamp = useRef(null);                         // updatedAt this tab last loaded or saved
@@ -2557,13 +2551,13 @@ export default function LifeOS({ user }) {
     (async () => {
       try {
         const remote = await loadRemote(user.id);
-        const { updatedAt = null, ...base } = remote || SEED;
+        const { updatedAt = null, prevUpdatedAt, ...base } = remote || SEED;
         const next = migrate(withDefaults(base));
         stamp.current = updatedAt;
         first.current = true;
         setState(next);
         setLoadError(null);
-        setStale(null);
+        setStale(false);
         setStorageOk(true);
       } catch (e) {
         /* Never let a failed load become an overwrite: show seed data, but don't save it. */
@@ -2575,23 +2569,23 @@ export default function LifeOS({ user }) {
   }, [user.id, loadTry]);
 
   useEffect(() => {
-    if (!state || storageOk === null || loadError) return;
+    if (!state || storageOk === null || loadError || stale) return;
     if (first.current) { first.current = false; return; }
     setSaveStatus("saving");
     const t = setTimeout(() => {
       queue.current = queue.current.then(async () => {
         try {
           const r = await saveRemote(user.id, state, stamp.current);
+          if (r.conflict) { setStale(true); setSaveStatus("blocked"); return; }
           stamp.current = r.updatedAt;
-          if (r.conflict) setStale({ overwritten: true });
           setSaveStatus("saved"); setStorageOk(true);
         } catch { setSaveStatus("failed"); setStorageOk(false); }
       });
     }, 700);
     return () => clearTimeout(t);
-  }, [state, storageOk, loadError, user.id]);
+  }, [state, storageOk, loadError, stale, user.id]);
 
-  /* Coming back to this tab (phone <-> PC): warn if the server moved on without us. */
+  /* Coming back to this tab (phone <-> PC): stop saving if the server moved on without us. */
   useEffect(() => {
     if (loadError) return;
     const check = () => {
@@ -2599,15 +2593,17 @@ export default function LifeOS({ user }) {
       queue.current = queue.current.then(async () => {
         try {
           const s = await remoteStamp(user.id);
-          if (s && s !== stamp.current) setStale({ overwritten: false });
+          if (s !== stamp.current) setStale(true);
         } catch {}
       });
     };
     document.addEventListener("visibilitychange", check);
     window.addEventListener("focus", check);
+    window.addEventListener("pageshow", check);
     return () => {
       document.removeEventListener("visibilitychange", check);
       window.removeEventListener("focus", check);
+      window.removeEventListener("pageshow", check);
     };
   }, [user.id, loadError]);
 
@@ -2732,17 +2728,14 @@ export default function LifeOS({ user }) {
           <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
             <span onClick={() => setTab("backup")} title="Storage status" style={{
               fontFamily: MONO, fontSize: 9.5, letterSpacing: .8, cursor: "pointer", marginRight: 6,
-              padding: "4px 8px", borderRadius: 6, border: `1px solid ${storageOk === false ? C.signal : C.rule}`,
-              color: storageOk === false ? C.signal : saveStatus === "saved" ? C.moss : C.dim,
-            }}>{loadError ? "SAVING OFF" : storageOk === false ? "NOT SAVING" : saveStatus === "saving" ? "SAVING…" : saveStatus === "saved" ? "SAVED" : "READY"}</span>
+              padding: "4px 8px", borderRadius: 6, border: `1px solid ${storageOk === false || stale ? C.signal : C.rule}`,
+              color: storageOk === false || stale ? C.signal : saveStatus === "saved" ? C.moss : C.dim,
+            }}>{loadError || stale ? "SAVING OFF" : storageOk === false ? "NOT SAVING" : saveStatus === "saving" ? "SAVING…" : saveStatus === "saved" ? "SAVED" : "READY"}</span>
             <Btn onClick={() => setOffset(offset - 1)}><ChevronLeft size={15} /></Btn>
             <Btn onClick={() => setOffset(0)} active={offset === 0}>Today</Btn>
             <Btn onClick={() => setOffset(Math.min(0, offset + 1))} style={{ opacity: offset >= 0 ? .35 : 1 }}><ChevronRight size={15} /></Btn>
           </div>
         </div>
-
-        <SyncBanner loadError={loadError} stale={stale}
-          onRetry={() => setLoadTry((n) => n + 1)} onDismiss={() => setStale(null)} />
 
         <div style={{ display: "flex", gap: 2, marginBottom: 14, borderBottom: `1px solid ${C.rule}`, overflowX: "auto" }}>
           {TABS.map((t) => {
@@ -2756,6 +2749,8 @@ export default function LifeOS({ user }) {
             );
           })}
         </div>
+
+        <SyncBanner loadError={loadError} stale={stale} onRetry={() => setLoadTry((n) => n + 1)} />
 
         {tab === "today" && <Today day={day} setDay={setDay} streak={streak} upcoming={upcoming} state={state} onApply={applyActions} />}
         {tab === "dash" && <Dashboard state={state} meta={meta} viewDate={viewDate} />}
