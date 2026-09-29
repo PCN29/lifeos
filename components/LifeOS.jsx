@@ -183,11 +183,13 @@ function computeMeta(state) {
 }
 
 /* --- VCE maths: ONLY count SACs that have a mark. This is the fix. --- */
+/* Tasks weighted 0 (practice checkpoints the study design doesn't count) are left out. */
 function unitAvg(sacs) {
-  const done = (sacs || []).filter((s) => s.mark !== null && s.mark !== undefined && s.total);
+  const counted = (sacs || []).filter((s) => s.weight !== 0);
+  const done = counted.filter((s) => s.mark !== null && s.mark !== undefined && s.total);
   if (!done.length) return null;
   const m = done.reduce((a, s) => a + s.mark, 0), t = done.reduce((a, s) => a + s.total, 0);
-  return { pct: m / t, mark: m, total: t, n: done.length, pending: (sacs || []).length - done.length };
+  return { pct: m / t, mark: m, total: t, n: done.length, pending: counted.length - done.length };
 }
 function subjectAvg(sub) {
   const all = [...(sub.units[3] || []), ...(sub.units[4] || [])];
