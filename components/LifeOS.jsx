@@ -8,8 +8,6 @@ import { VCAA_WEIGHTS, VCAA_EXAM_WEIGHTS, SEED_PAPERS, SCHOOL_DEFAULT as SCHOOL,
 import { conceptStatus, LEVELS, SOLID_RULE } from "../lib/syllabus";
 import Atlas from "./Atlas";
 import { MuscleMap, Goal, Fuel } from "./Body";
-import { resolveQuickActions } from "../lib/quick-actions.mjs";
-import { liftTotal, recentLiftEntries } from "../lib/tracking.mjs";
 import { SEED_PROGRESS } from "../lib/atlas";
 import {
   Flame, Dumbbell, BookOpen, Play, Square, Plus, Minus, Trophy, ChevronLeft,
@@ -315,19 +313,14 @@ function QuickAdd({ state, onApply }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [err, setErr] = useState(null);
-  const pending = useRef(false);
-  const currentState = useRef(state);
-  currentState.current = state;
 
   const subjectList = state.vce.subjects.map((s) =>
-    `${s.id} = ${s.name}; SACs: ${[3, 4].map(u => `Unit ${u}: ${(s.units[u] || []).map(x => x.name).join(", ")}`).join("; ")}${(s.exams || []).length ? ` (exams: ${s.exams.map((x) => x.name).join(", ")})` : ""}`).join("; ");
+    `${s.id} = ${s.name}${(s.exams || []).length ? ` (exams: ${s.exams.map((x) => x.name).join(", ")})` : ""}`).join(", ");
   const todayKey = key(new Date());
   const todayName = new Date().toLocaleDateString("en-AU", { weekday: "long" });
 
   const send = async () => {
-    if (!text.trim() || pending.current) return;
-    if (text.length > 2000) { setErr("Try one change at a time (up to 2,000 characters)."); return; }
-    pending.current = true;
+    if (!text.trim() || busy) return;
     setBusy(true); setErr(null); setResult(null);
     const prompt = `You turn a VCE student's shorthand into structured actions. Respond with ONLY raw JSON, no markdown fences, no commentary.
 
@@ -347,7 +340,7 @@ Each action is one of:
 {"type":"add_note","text":"..."}
 
 Rules:
-- unit is 3 or 4. Match the named SAC's unit in the list above; if adding a SAC and unclear, use 4.
+- unit is 3 or 4. If unclear for a Unit 3&4 student in August 2026, use 4.
 - Resolve relative dates ("this Friday", "next Tuesday") against today's date. Output ISO YYYY-MM-DD.
 - weight is a percentage number if the user states one, else null.
 - For set_mark, match "name" to an existing SAC name as closely as you can.
@@ -356,43 +349,38 @@ Rules:
 
 Input: ${text}`;
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 35000);
     try {
       const r = await fetch("/api/quickadd", {
         method: "POST",
-        signal: controller.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt }),
       });
-      const data = await r.json().catch(() => { throw new Error("Couldn't read the response. Your text is still here; please retry."); });
-      if (!r.ok || data.error) throw new Error(data.error || "That didn't go through. Please retry.");
+      const data = await r.json();
+      if (data.error) { setErr(data.error); setBusy(false); return; }
       const raw = (data.text || "").replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(raw);
-      const actions = resolveQuickActions(parsed, currentState.current);
-      if (!actions.length) { setErr(parsed.summary || "Couldn't read that. Try naming the subject and the date."); }
-      else { onApply(actions); setResult(parsed.summary || "Changes added."); setText(""); }
+      if (!parsed.actions || !parsed.actions.length) { setErr(parsed.summary || "Couldn't read that. Try naming the subject and the date."); }
+      else { onApply(parsed.actions); setResult(parsed.summary); setText(""); }
     } catch (e) {
-      setErr(controller.signal.aborted ? "That took too long. Your text is still here; retry when ready." : e.message || "Check your connection and try again.");
-    } finally {
-      clearTimeout(timeout); pending.current = false; setBusy(false);
+      setErr("That didn't go through. Check your connection and try again.");
     }
+    setBusy(false);
   };
 
   return (
     <Card>
       <Eyebrow>Tell it what changed</Eyebrow>
       <div style={{ display: "flex", gap: 8 }}>
-        <input value={text} disabled={busy} maxLength={2000} aria-label="Describe what changed" onChange={(e) => setText(e.target.value)}
+        <input value={text} onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") send(); }}
           placeholder="Software Dev SAC worth 10% this Friday"
           style={{ ...inputStyle, fontFamily: SANS, fontSize: 14 }} />
         <Btn onClick={send} active={!busy} style={{ padding: "9px 15px", opacity: busy ? .5 : 1 }}>
-          {busy ? "…" : err ? "Retry" : <Plus size={14} />}
+          {busy ? "…" : <Plus size={14} />}
         </Btn>
       </div>
       {result && <div style={{ fontSize: 12.5, color: C.moss, marginTop: 9, lineHeight: 1.5 }}>{result}</div>}
-      {err && <div role="alert" style={{ fontSize: 12.5, color: C.signal, marginTop: 9, lineHeight: 1.5 }}>{err}</div>}
+      {err && <div style={{ fontSize: 12.5, color: C.signal, marginTop: 9, lineHeight: 1.5 }}>{err}</div>}
       {!result && !err && (
         <div style={{ fontSize: 11.5, color: C.dim, marginTop: 9, lineHeight: 1.5 }}>
           Also works for: "got 31/40 on Motion", "did 90 mins of methods", "gym done", "physics exam moved to Nov 13".
@@ -2203,7 +2191,7 @@ const SEED_BODY = [
   { id: "b2", date: "2025-10-01", height: 183, weight: 70 },
 ];
 
-const totalOf = liftTotal;
+const totalOf = (e) => e.pyr ? Math.max(...e.pyr) : (e.w || 0) + (e.add || 0);
 const notationOf = (e) => {
   if (e.pyr) return e.pyr.join(", ");
   let s = `${e.w} (${e.add || 0})`;
@@ -2215,32 +2203,24 @@ const notationOf = (e) => {
 function Gym({ state, setState, todayKey }) {
   const [openLift, setOpenLift] = useState(null);
   const [routine, setRoutine] = useState("Main");
-  const [entryError, setEntryError] = useState("");
 
   const lifts = state.lifts || [];
   const body = state.body || [];
   const routines = [...new Set(lifts.map((l) => l.routine))];
 
-  const setLifts = (n) => setState(prev => ({ ...prev, lifts: typeof n === "function" ? n(prev.lifts || []) : n }));
-  const patchLift = (id, fn) => setLifts(current => current.map((l) => l.id === id ? fn({ ...l }) : l));
+  const setLifts = (n) => setState({ ...state, lifts: n });
+  const patchLift = (id, fn) => setLifts(lifts.map((l) => l.id === id ? fn({ ...l }) : l));
 
-  const addEntry = (lift, pyramid = false) => {
-    const last = [...lift.entries].filter(e => e.date <= todayKey).sort((a, b) => a.date.localeCompare(b.date)).at(-1);
+  const addEntry = (lift) => {
+    const last = lift.entries[lift.entries.length - 1];
     const seed = last
-      ? (last.pyr ? { ...last, id: "e" + Date.now(), date: todayKey, pyr: [...last.pyr], note: "" }
+      ? (last.pyr ? { ...last, id: "e" + Date.now(), date: todayKey, pyr: [...last.pyr] }
                   : { ...last, id: "e" + Date.now(), date: todayKey, note: "" })
       : { id: "e" + Date.now(), date: todayKey, w: 0, add: 0, inc: null, side: null, pyr: null, note: "" };
-    const entry = { ...seed, id: crypto.randomUUID(), ...(pyramid ? { w: null, add: 0, pyr: [0, 0, 0, 0], note: "" } : {}) };
-    setState(prev => ({ ...prev,
-      lifts: (prev.lifts || []).map(l => l.id === lift.id ? { ...l, entries: [...l.entries, entry] } : l),
-      days: { ...prev.days, [todayKey]: { ...(prev.days[todayKey] || blank(todayKey)), gym: true } },
-    }));
+    patchLift(lift.id, (l) => ({ ...l, entries: [...l.entries, seed] }));
+    setState((prev) => ({ ...prev, days: { ...prev.days, [todayKey]: { ...(prev.days[todayKey] || blank(todayKey)), gym: true } } }));
   };
-  const patchEntry = (liftId, entId, field, v) => {
-    if (field === "date" && !v) return;
-    if (!["date", "note", "pyr"].includes(field) && v !== "" && (!Number.isFinite(Number(v)) || Number(v) < 0)) { setEntryError("Use a non-negative number for weight and increments."); return; }
-    if (field === "pyr" && v.split(",").some(x => x.trim() && (!Number.isFinite(Number(x)) || Number(x) < 0))) { setEntryError("Enter non-negative weights separated by commas."); return; }
-    setEntryError("");
+  const patchEntry = (liftId, entId, field, v) =>
     patchLift(liftId, (l) => ({
       ...l,
       entries: l.entries.map((e) => e.id !== entId ? e : {
@@ -2250,19 +2230,16 @@ function Gym({ state, setState, todayKey }) {
                : (v === "" ? null : Number(v)),
       }),
     }));
-  };
   const delEntry = (liftId, entId) =>
     patchLift(liftId, (l) => ({ ...l, entries: l.entries.filter((e) => e.id !== entId) }));
   const addLift = () => {
     const id = "lift" + Date.now();
-    setLifts(current => [...current, { id, name: "New exercise", scheme: "4x10", routine, entries: [] }]);
+    setLifts([...lifts, { id, name: "New exercise", scheme: "4x10", routine, entries: [] }]);
     setOpenLift(id);
   };
 
   const shown = lifts.filter((l) => l.routine === routine);
   const small = { ...inputStyle, padding: "5px 7px", fontSize: 12.5 };
-  const recent = recentLiftEntries(lifts, key(addDays(parseKey(todayKey), -6)), todayKey);
-  const sessions = new Set(recent.map(e => e.date)).size;
 
   /* body measurements */
   const addBody = () => setState({
@@ -2275,12 +2252,6 @@ function Gym({ state, setState, todayKey }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <Card>
-        <Eyebrow>Training · 7 days ending {todayKey}</Eyebrow>
-        <div style={{ fontFamily: MONO, fontSize: 14 }}>{sessions} training days · {recent.length} exercise entries</div>
-        <div style={{ color: C.dim, fontSize: 12, marginTop: 6 }}>Log a row for each exercise you train. Progress below compares recorded loads.</div>
-      </Card>
-      {entryError && <div role="alert" style={{ fontSize: 13, color: C.signal }}>{entryError}</div>}
       <Card style={{ padding: 12 }}>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
           {routines.map((r) => (
@@ -2304,7 +2275,7 @@ function Gym({ state, setState, todayKey }) {
         const isOpen = openLift === l.id;
         const nextUp = last && last.inc ? totalOf(last) + last.inc : null;
         const chart = ents.map((e) => ({
-          k: e.date, label: parseKey(e.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" }),
+          k: e.date, label: parseKey(e.date).toLocaleDateString("en-AU", { month: "short", year: "2-digit" }),
           kg: totalOf(e),
         }));
 
@@ -2363,7 +2334,7 @@ function Gym({ state, setState, todayKey }) {
                       <input type="date" value={e.date} onChange={(ev) => patchEntry(l.id, e.id, "date", ev.target.value)}
                         style={{ ...small, flex: "0 0 132px" }} />
                       {e.pyr ? (
-                        <input defaultValue={e.pyr.join(", ")} onBlur={(ev) => patchEntry(l.id, e.id, "pyr", ev.target.value)}
+                        <input value={e.pyr.join(", ")} onChange={(ev) => patchEntry(l.id, e.id, "pyr", ev.target.value)}
                           placeholder="7, 8, 9, 10" style={{ ...small, flex: "1 1 120px", fontFamily: MONO }} />
                       ) : (
                         <>
@@ -2382,19 +2353,21 @@ function Gym({ state, setState, todayKey }) {
                         <X size={12} />
                       </button>
                     </div>
-                    <input aria-label="Session note" value={e.note || ""} onChange={ev => patchEntry(l.id, e.id, "note", ev.target.value)} placeholder="Session note (optional)" style={{ ...small, width: "100%", marginTop: 6 }} />
+                    {e.note && <div style={{ fontSize: 11, color: C.amber, marginTop: 3 }}>{e.note}</div>}
                   </div>
                 ))}
 
                 <div style={{ display: "flex", gap: 7, marginTop: 9, flexWrap: "wrap" }}>
                   <Btn onClick={() => addEntry(l)} active style={{ padding: "6px 11px", fontSize: 12 }}>
-                    <Plus size={11} /> Log {todayKey === key(new Date()) ? "today" : todayKey}
+                    <Plus size={11} /> Log today
                   </Btn>
-                  <Btn onClick={() => addEntry(l, true)} style={{ padding: "6px 11px", fontSize: 12 }}>
+                  <Btn onClick={() => patchLift(l.id, (x) => ({
+                    ...x, entries: [...x.entries, { id: "e" + Date.now(), date: todayKey, w: null, add: 0, inc: null, side: null, pyr: [0,0,0,0], note: "" }],
+                  }))} style={{ padding: "6px 11px", fontSize: 12 }}>
                     <Plus size={11} /> Pyramid row
                   </Btn>
                   <span style={{ flex: 1 }} />
-                  <Btn onClick={() => setLifts(current => current.filter((x) => x.id !== l.id))}
+                  <Btn onClick={() => setLifts(lifts.filter((x) => x.id !== l.id))}
                     style={{ padding: "6px 11px", fontSize: 12, borderColor: C.signal, color: C.signal }}>
                     Remove exercise
                   </Btn>
@@ -2450,7 +2423,7 @@ function BodyTab({ state, setState, todayKey }) {
       </Card>
       {view === "train" && (
         <>
-          <MuscleMap lifts={state.lifts} endDate={todayKey} />
+          <MuscleMap lifts={state.lifts} />
           <Gym state={state} setState={setState} todayKey={todayKey} />
         </>
       )}
@@ -2706,15 +2679,16 @@ export default function LifeOS({ user }) {
           su.exams = [...su.exams, E(a.name || "Exam", a.date, a.time || "", a.location)];
         } else if (a.type === "set_mark") {
           const su = sub(a.subjectId); if (!su) return;
-          [a.unit].forEach((u) => {
+          [3, 4].forEach((u) => {
             su.units[u] = su.units[u].map((x) =>
-              x.name.toLowerCase() === a.name.toLowerCase()
+              x.name.toLowerCase().includes((a.name || "").toLowerCase()) && (a.name || "").length > 2
                 ? { ...x, mark: a.mark ?? x.mark, total: a.total ?? x.total } : x);
           });
         } else if (a.type === "set_exam_mark") {
           const su = sub(a.subjectId); if (!su) return;
           const n = (a.name || "").toLowerCase();
-          const i = su.exams.findIndex((x) => x.name.toLowerCase() === n);
+          const i = su.exams.length === 1 ? 0
+            : su.exams.findIndex((x) => x.name.toLowerCase() === n || (n.length > 2 && x.name.toLowerCase().includes(n)));
           if (i < 0) return;
           su.exams[i] = { ...su.exams[i], mark: a.mark ?? su.exams[i].mark, total: a.total ?? su.exams[i].total };
         } else if (a.type === "log_time") {
