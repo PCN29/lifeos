@@ -1903,19 +1903,31 @@ function Papers({ state, setState }) {
   }]);
 
   const status = useMemo(() => statusMap(state), [state.concepts, state.evidence, state.practice, state.kkOverride]);
-  /* send a ticked paper straight into the practice log */
-  const logIt = (p) => {
+  /* A paper's attempts: linked by paperId, or (older rows) by subject + source + name. */
+  const attemptsOf = (p) => (state.practice || [])
+    .filter((r) => r.paperId === p.id || (!r.paperId && r.sub === p.sub && r.source === p.provider && r.paper === p.name))
+    .sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  /* LOG opens a small form under the paper; saving adds an attempt to Practice and ticks the paper. */
+  const [draft, setDraft] = useState(null);
+  const openLog = (p) => setDraft(draft?.paperId === p.id ? null : {
+    paperId: p.id, mark: "", total: p.marks ?? "", minutes: "", marking: "solutions", date: key(new Date()),
+  });
+  const saveLog = (p) => {
+    const num = (v) => (v === "" || v === null ? null : Number(v));
     const row = {
-      id: "p" + Date.now(), sub: p.sub, source: p.provider, paper: p.name,
-      date: key(new Date()), mark: null, total: p.marks ?? null, minutes: null, allowed: p.mins ?? null,
-      marking: "unmarked", note: "",
+      id: "p" + Date.now(), paperId: p.id, sub: p.sub, source: p.provider, paper: p.name,
+      date: draft.date || key(new Date()), mark: num(draft.mark), total: num(draft.total),
+      minutes: num(draft.minutes), allowed: p.mins ?? null,
+      marking: draft.mark === "" ? "unmarked" : draft.marking, note: "",
     };
     setState({
       ...state,
       practice: [...(state.practice || []), row],
       papers: papers.map((x) => x.id === p.id ? { ...x, done: true } : x),
     });
+    setDraft(null);
   };
+  const pctColour = (r) => (r >= .8 ? C.moss : r >= .6 ? C.amber : C.signal);
 
   const visibleSubs = filter === "all" ? subs : subs.filter((s) => s.id === filter);
 
@@ -1992,8 +2004,9 @@ function Papers({ state, setState }) {
                       <strong>{d}</strong>/{list.length}
                     </span>
                   </div>
-                  {list.map((p) => (
-                    <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 0" }}>
+                  {list.map((p) => { const tries = attemptsOf(p), last = tries.find((r) => isMarked(r)) || null, mk = last && MARKING.find((m) => m.id === last.marking); return (
+                    <React.Fragment key={p.id}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 0" }}>
                       <button onClick={() => toggle(p.id)} style={{
                         width: 19, height: 19, flexShrink: 0, borderRadius: 5, cursor: "pointer",
                         background: p.done ? C.moss : C.plate2,
@@ -2016,15 +2029,77 @@ function Papers({ state, setState }) {
                           OLD DESIGN
                         </span>
                       )}
-                      <button onClick={() => logIt(p)} title="Log it in Practice" style={{
-                        background: "none", border: `1px solid ${C.rule}`, borderRadius: 5, color: C.dim,
+                      {last && (
+                        <span title={`${mk?.label || ""}${tries.length > 1 ? ` · ${tries.length} attempts` : ""}`} style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0, fontFamily: MONO, fontSize: 11.5 }}>
+                          <span style={{ width: 7, height: 7, borderRadius: 4, background: mk?.colour || C.dim }} />
+                          <span style={{ color: C.bone }}>{last.mark}/{last.total}</span>
+                          <span style={{ color: pctColour(last.mark / last.total) }}>{Math.round((last.mark / last.total) * 100)}%</span>
+                          {tries.length > 1 && <span style={{ color: C.dim }}>×{tries.length}</span>}
+                        </span>
+                      )}
+                      {!last && tries.length > 0 && (
+                        <span style={{ fontFamily: MONO, fontSize: 10, color: C.dim, flexShrink: 0 }}>not marked</span>
+                      )}
+                      <button onClick={() => openLog(p)} title="Log an attempt with your score" style={{
+                        background: draft?.paperId === p.id ? C.signal : "none", border: `1px solid ${draft?.paperId === p.id ? C.signal : C.rule}`, borderRadius: 5,
+                        color: draft?.paperId === p.id ? C.ink : C.dim,
                         cursor: "pointer", padding: "3px 7px", fontSize: 10.5, fontFamily: MONO, flexShrink: 0,
                       }}>LOG</button>
                       <button onClick={() => removeP(p.id)} style={{ background: "none", border: "none", color: C.rule, cursor: "pointer", padding: 2, flexShrink: 0 }}>
                         <X size={12} />
                       </button>
                     </div>
-                  ))}
+                    {draft?.paperId === p.id && (
+                      <div style={{ margin: "2px 0 10px 28px", padding: 10, background: C.plate2, border: `1px solid ${C.rule}`, borderRadius: 8 }}>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                          <input autoFocus value={draft.mark} onChange={(e) => setDraft({ ...draft, mark: e.target.value })} placeholder="score" inputMode="decimal"
+                            style={{ ...smallInput, flex: "0 0 62px", textAlign: "center" }} />
+                          <span style={{ color: C.dim }}>/</span>
+                          <input value={draft.total} onChange={(e) => setDraft({ ...draft, total: e.target.value })} placeholder="out of" inputMode="numeric"
+                            style={{ ...smallInput, flex: "0 0 62px", textAlign: "center" }} />
+                          {draft.mark !== "" && Number(draft.total) > 0 && (
+                            <span style={{ fontFamily: MONO, fontSize: 12, color: pctColour(Number(draft.mark) / Number(draft.total)) }}>
+                              {Math.round((Number(draft.mark) / Number(draft.total)) * 100)}%
+                            </span>
+                          )}
+                          <input value={draft.minutes} onChange={(e) => setDraft({ ...draft, minutes: e.target.value })} placeholder="mins" inputMode="numeric"
+                            title={p.mins ? `Time allowed: ${p.mins} min` : "Minutes taken"} style={{ ...smallInput, flex: "0 0 58px", textAlign: "center" }} />
+                          {p.mins ? <span style={{ fontFamily: MONO, fontSize: 10.5, color: C.dim }}>of {p.mins}</span> : null}
+                          <input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })}
+                            style={{ ...smallInput, flex: "0 0 132px" }} />
+                        </div>
+                        <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 8 }}>
+                          {MARKING.filter((m) => m.id !== "unmarked").map((m) => (
+                            <button key={m.id} onClick={() => setDraft({ ...draft, marking: m.id })} style={{
+                              padding: "4px 9px", borderRadius: 6, cursor: "pointer", fontSize: 11.5, fontFamily: SANS,
+                              background: draft.marking === m.id ? m.colour : "none", color: draft.marking === m.id ? C.ink : C.dim,
+                              border: `1px solid ${draft.marking === m.id ? m.colour : C.rule}`, fontWeight: draft.marking === m.id ? 600 : 400,
+                            }}>{m.label}</button>
+                          ))}
+                          <span style={{ flex: 1 }} />
+                          <Btn onClick={() => setDraft(null)} style={{ padding: "4px 10px", fontSize: 12 }}>Cancel</Btn>
+                          <Btn onClick={() => saveLog(p)} active style={{ padding: "4px 12px", fontSize: 12 }}>Save</Btn>
+                        </div>
+                        <div style={{ fontSize: 11, color: C.dim, marginTop: 6 }}>
+                          Leave the score blank if you haven't marked it yet; you can add it later in Attempts.
+                        </div>
+                        {tries.length > 0 && (
+                          <div style={{ marginTop: 8, borderTop: `1px solid ${C.rule}`, paddingTop: 6 }}>
+                            {tries.map((r) => { const m = MARKING.find((x) => x.id === r.marking); return (
+                              <div key={r.id} style={{ display: "flex", gap: 8, alignItems: "center", fontFamily: MONO, fontSize: 11, color: C.dim, padding: "2px 0" }}>
+                                <span style={{ flex: "0 0 74px" }}>{r.date || "—"}</span>
+                                <span style={{ color: C.bone, flex: "0 0 58px" }}>{isMarked(r) ? `${r.mark}/${r.total}` : "—"}</span>
+                                <span style={{ flex: "0 0 38px", color: isMarked(r) ? pctColour(r.mark / r.total) : C.dim }}>{isMarked(r) ? Math.round((r.mark / r.total) * 100) + "%" : ""}</span>
+                                <span style={{ color: m?.colour }}>{m?.label}</span>
+                                {r.minutes ? <span>· {r.minutes} min</span> : null}
+                              </div>
+                            ); })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    </React.Fragment>
+                  ); })}
                 </div>
               );
             })}
