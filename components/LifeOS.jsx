@@ -1909,9 +1909,14 @@ function Papers({ state, setState }) {
     .sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   /* LOG opens a small form under the paper; saving adds an attempt to Practice and ticks the paper. */
   const [draft, setDraft] = useState(null);
-  const openLog = (p) => setDraft(draft?.paperId === p.id ? null : {
-    paperId: p.id, mark: "", total: p.marks ?? "", minutes: "", marking: "solutions", date: key(new Date()),
-  });
+  const openLog = (p) => {
+    if (draft?.paperId === p.id) return setDraft(null);
+    const empty = attemptsOf(p).find((r) => !isMarked(r));
+    setDraft(empty ? {
+      paperId: p.id, editId: empty.id, mark: "", total: empty.total ?? p.marks ?? "", minutes: empty.minutes ?? "",
+      marking: empty.marking && empty.marking !== "unmarked" ? empty.marking : "solutions", date: empty.date || key(new Date()),
+    } : { paperId: p.id, mark: "", total: p.marks ?? "", minutes: "", marking: "solutions", date: key(new Date()) });
+  };
   const saveLog = (p) => {
     const num = (v) => (v === "" || v === null ? null : Number(v));
     const row = {
@@ -1920,11 +1925,11 @@ function Papers({ state, setState }) {
       minutes: num(draft.minutes), allowed: p.mins ?? null,
       marking: draft.mark === "" ? "unmarked" : draft.marking, note: "",
     };
-    setState({
-      ...state,
-      practice: [...(state.practice || []), row],
-      papers: papers.map((x) => x.id === p.id ? { ...x, done: true } : x),
-    });
+    const practice = draft.editId
+      ? (state.practice || []).map((r) => r.id !== draft.editId ? r
+          : { ...r, paperId: p.id, date: row.date, mark: row.mark, total: row.total, minutes: row.minutes, marking: row.marking })
+      : [...(state.practice || []), row];
+    setState({ ...state, practice, papers: papers.map((x) => x.id === p.id ? { ...x, done: true } : x) });
     setDraft(null);
   };
   const pctColour = (r) => (r >= .8 ? C.moss : r >= .6 ? C.amber : C.signal);
@@ -2038,7 +2043,8 @@ function Papers({ state, setState }) {
                         </span>
                       )}
                       {!last && tries.length > 0 && (
-                        <span style={{ fontFamily: MONO, fontSize: 10, color: C.dim, flexShrink: 0 }}>not marked</span>
+                        <button onClick={() => openLog(p)} title="Add the score" style={{ background: "none", border: "none", padding: 0, cursor: "pointer",
+                          fontFamily: MONO, fontSize: 10, color: C.amber, flexShrink: 0, textDecoration: "underline dotted" }}>add score</button>
                       )}
                       <button onClick={() => openLog(p)} title="Log an attempt with your score" style={{
                         background: draft?.paperId === p.id ? C.signal : "none", border: `1px solid ${draft?.paperId === p.id ? C.signal : C.rule}`, borderRadius: 5,
@@ -2081,7 +2087,7 @@ function Papers({ state, setState }) {
                           <Btn onClick={() => saveLog(p)} active style={{ padding: "4px 12px", fontSize: 12 }}>Save</Btn>
                         </div>
                         <div style={{ fontSize: 11, color: C.dim, marginTop: 6 }}>
-                          Leave the score blank if you haven't marked it yet; you can add it later in Attempts.
+                          {draft.editId ? "Adding the score to the attempt you already logged." : "Leave the score blank if you haven't marked it yet, and come back to add it."}
                         </div>
                         {tries.length > 0 && (
                           <div style={{ marginTop: 8, borderTop: `1px solid ${C.rule}`, paddingTop: 6 }}>
